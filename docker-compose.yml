@@ -1,0 +1,28 @@
+# Foundation-stage local infrastructure only: Postgres + Redis.
+# No application services are defined yet (apps/api, apps/web do not exist).
+#
+# STATUS: written but NOT verified — Docker Desktop was not installed on
+# the machine this was authored on. Do not assume `docker compose up`
+# succeeds until it has actually been run.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-razorpay_decision_intelligence}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+
+volumes:
+  postgres_data:
