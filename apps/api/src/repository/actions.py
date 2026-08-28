@@ -13,6 +13,16 @@ class DuplicateAction(Exception):
     retry the underlying operation."""
 
 
+class ActionNotPolicyAuthorized(Exception):
+    """Raised when the database's guard_action_authorization trigger
+    (0003_action_authorization_guard.sql) rejects a transition into
+    AUTHORIZED/EXECUTING because the row's persisted
+    policy_evaluation.allowed is not true. Defense-in-depth: this should
+    never fire if application code (src/action/orchestrator.py) is
+    correct, but if it does, it must not be mistaken for an ordinary DB
+    error or silently swallowed."""
+
+
 def insert_action(
     conn: psycopg.Connection,
     decision_id: str,
@@ -51,25 +61,61 @@ def update_action_status(
     verification_result: dict[str, Any] | None = None,
     outcome: dict[str, Any] | None = None,
 ) -> None:
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            update actions
-            set status = %s,
-                execution_reference = coalesce(%s, execution_reference),
-                verification_result = coalesce(%s, verification_result),
-                outcome = coalesce(%s, outcome),
-                updated_at = now()
-            where id = %s
-            """,
-            (
-                status,
-                psycopg.types.json.Json(execution_reference) if execution_reference is not None else None,
-                psycopg.types.json.Json(verification_result) if verification_result is not None else None,
-                psycopg.types.json.Json(outcome) if outcome is not None else None,
-                action_id,
-            ),
-        )
+    try:
+        # Savepoint, not conn.rollback() on failure -- same reasoning as
+        # payment_attempts.update_payment_attempt_status. A rejection
+        # from guard_action_authorization must only undo this statement,
+        # never the surrounding transaction.
+        #
+        # Jsonb (not Json) is required here specifically: COALESCE(%s,
+        # jsonb_column) needs both operands typed as jsonb to resolve at
+        # all. json -> jsonb is only an ASSIGNMENT cast in Postgres --
+        # valid for plain `column = %s`, but COALESCE's type resolution
+        # doesn't consult assignment casts, so a `Json`-wrapped parameter
+        # (sent as `json`) fails there with "could not convert type
+        # jsonb to json". Every other repository write in this project
+        # uses plain assignment and is unaffected; this is the only
+        # COALESCE-based write in the schema.
+        with conn.transaction():
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    update actions
+                    set status = %s,
+                        execution_reference = coalesce(%s, execution_reference),
+                        verification_result = coalesce(%s, verification_result),
+                        outcome = coalesce(%s, outcome),
+                        updated_at = now()
+                    where id = %s
+                    """,
+                    (
+                        status,
+                        psycopg.types.json.Jsonb(execution_reference) if execution_reference is not None else None,
+                        psycopg.types.json.Jsonb(verification_result) if verification_result is not None else None,
+                        psycopg.types.json.Jsonb(outcome) if outcome is not None else None,
+                        action_id,
+                    ),
+                )
+    except psycopg.errors.RaiseException as exc:
+        raise ActionNotPolicyAuthorized(str(exc)) from exc
+
+
+def claim_action_for_execution(conn: psycopg.Connection, action_id: UUID | str) -> bool:
+    """Compare-and-swap AUTHORIZED -> EXECUTING. Returns True only for
+    the caller that actually wins the claim; a concurrent caller (or one
+    that arrives after the action is no longer AUTHORIZED) gets False
+    and must not proceed to call Razorpay."""
+    try:
+        with conn.transaction():
+            with conn.cursor() as cur:
+                cur.execute(
+                    "update actions set status = 'EXECUTING', updated_at = now() "
+                    "where id = %s and status = 'AUTHORIZED'",
+                    (action_id,),
+                )
+                return cur.rowcount == 1
+    except psycopg.errors.RaiseException as exc:
+        raise ActionNotPolicyAuthorized(str(exc)) from exc
 
 
 def get_action(conn: psycopg.Connection, action_id: UUID) -> dict[str, Any] | None:
