@@ -118,6 +118,21 @@ def claim_action_for_execution(conn: psycopg.Connection, action_id: UUID | str) 
         raise ActionNotPolicyAuthorized(str(exc)) from exc
 
 
+def get_action_for_update(conn: psycopg.Connection, action_id: UUID | str) -> dict[str, Any] | None:
+    """Row-level lock (SELECT ... FOR UPDATE), used by
+    verification.verifier.verify_action() to serialize concurrent
+    verification attempts on the same action. Must be called inside an
+    open transaction (conn.transaction()) for the lock to hold beyond
+    this single statement -- holding it for the whole verify_action()
+    call ensures two simultaneous callers cannot both read a stale
+    verification_result, both increment the read-attempt counter past
+    the bound, or both write a terminal VERIFICATION_COMPLETED audit
+    entry."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute("select * from actions where id = %s for update", (action_id,))
+        return cur.fetchone()
+
+
 def get_action(conn: psycopg.Connection, action_id: UUID) -> dict[str, Any] | None:
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute("select * from actions where id = %s", (action_id,))
