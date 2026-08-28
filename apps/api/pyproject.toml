@@ -1,11 +1,12 @@
 [project]
 name = "razorpay-decision-intelligence-api"
 version = "0.1.0"
-description = "Phase 3 foundation: database schema, domain contracts, repository layer. No FastAPI app yet."
+description = "Phase 3 foundation: database schema, domain contracts, repository layer, Razorpay read adapter, reconciliation. No FastAPI app yet."
 requires-python = ">=3.11"
 dependencies = [
     "psycopg[binary]>=3.1",
     "pydantic>=2.6",
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]
