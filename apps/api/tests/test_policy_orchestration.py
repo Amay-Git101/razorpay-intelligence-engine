@@ -7,7 +7,6 @@ Actions don't exist yet).
 from __future__ import annotations
 
 from typing import Any
-from uuid import UUID
 
 import psycopg
 import pytest
@@ -17,8 +16,8 @@ from policy.orchestration import NotPolicyGated, evaluate_decision
 from reconciliation.service import reconcile_order
 from repository.audit import list_audit_trail_for_decision
 from repository.canonical_events import list_events_for_order
-from repository.decisions import insert_decision
 from repository.merchants import insert_merchant
+from support import insert_capture_decision as _insert_capture_decision
 
 
 def _order_fixture(order_id: str, status: str, amount_paid: int, amount_due: int, attempts: int) -> dict[str, Any]:
@@ -58,22 +57,6 @@ def _find_event(events: list[dict[str, Any]], event_type: str, entity_id: str | 
         if e["event_type"] == event_type and (entity_id is None or e["entity_id"] == entity_id):
             return e
     raise AssertionError(f"no event {event_type} (entity_id={entity_id}) found")
-
-
-def _insert_capture_decision(conn: psycopg.Connection, merchant_id: str, order_id: str, payment_attempt_id: str, amount: int) -> UUID:
-    """Hand-constructs a RECOMMEND_CAPTURE Decision -- RuleBasedEngine
-    does not produce this decision_type (approved gate constraint: Policy
-    is deliberately tested in isolation from Intelligence for this
-    decision type). Not a claim that this flow runs end-to-end today."""
-    return insert_decision(
-        conn, merchant_id, order_id, payment_attempt_id,
-        # a real event_id is still required by the FK-less-but-real column;
-        # reuse any existing event for this order for lineage plausibility
-        str(list_events_for_order(conn, order_id)[0]["id"]),
-        {"fields": []}, {"bucket_key": "n/a", "expected_recovery_rate": 1.0, "sample_size": 0, "source": "test_fixture"},
-        "RECOMMEND_CAPTURE", 1.0, ["TEST_FIXTURE_CAPTURE_RECOMMENDATION"],
-        {"revenue_at_stake": amount}, "test_fixture",
-    )
 
 
 def _reconcile_captured_order(conn, merchant_id: str, order_id: str) -> None:

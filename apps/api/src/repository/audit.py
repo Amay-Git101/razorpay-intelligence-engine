@@ -33,9 +33,14 @@ def insert_audit_entry(
 
 
 def list_audit_trail_for_decision(conn: psycopg.Connection, decision_id: str) -> list[dict[str, Any]]:
+    # sequence_number (not created_at) is the ordering key -- created_at
+    # is transaction-scoped in Postgres (identical for every statement in
+    # one transaction) and cannot discriminate insertion order on its
+    # own. See 0004_audit_entries_ordering_sequence.sql for the full
+    # explanation.
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
-            "select * from audit_entries where decision_id = %s order by created_at asc",
+            "select * from audit_entries where decision_id = %s order by sequence_number asc",
             (decision_id,),
         )
         return cur.fetchall()

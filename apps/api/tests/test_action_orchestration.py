@@ -11,7 +11,6 @@ orchestrator code path a real capture would use.
 from __future__ import annotations
 
 from typing import Any, Callable
-from uuid import UUID
 
 import httpx
 import psycopg
@@ -35,8 +34,8 @@ from repository.actions import (
 )
 from repository.audit import list_audit_trail_for_decision
 from repository.canonical_events import list_events_for_order
-from repository.decisions import insert_decision
 from repository.merchants import insert_merchant
+from support import insert_capture_decision as _insert_capture_decision
 
 
 class SpyWriteClient:
@@ -106,18 +105,6 @@ def _set_policy_config(conn: psycopg.Connection, merchant_id: str, config: dict[
             "update merchants set policy_config = %s where id = %s",
             (psycopg.types.json.Json(config), merchant_id),
         )
-
-
-def _insert_capture_decision(conn: psycopg.Connection, merchant_id: str, order_id: str, payment_attempt_id: str, amount: int) -> UUID:
-    """Hand-constructed RECOMMEND_CAPTURE Decision -- RuleBasedEngine does
-    not produce this decision_type (Gate 7 constraint, unchanged)."""
-    return insert_decision(
-        conn, merchant_id, order_id, payment_attempt_id,
-        str(list_events_for_order(conn, order_id)[0]["id"]),
-        {"fields": []}, {"bucket_key": "n/a", "expected_recovery_rate": 1.0, "sample_size": 0, "source": "test_fixture"},
-        "RECOMMEND_CAPTURE", 1.0, ["TEST_FIXTURE_CAPTURE_RECOMMENDATION"],
-        {"revenue_at_stake": amount}, "test_fixture",
-    )
 
 
 # ---------------------------------------------------------------------------

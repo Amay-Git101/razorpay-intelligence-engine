@@ -23,8 +23,7 @@ from razorpay_client.errors import RazorpayAPIError
 from reconciliation.service import reconcile_order
 from repository.actions import get_action, get_action_for_update
 from repository.audit import list_audit_trail_for_decision
-from repository.canonical_events import list_events_for_order
-from repository.decisions import insert_decision
+from support import insert_capture_decision as _insert_capture_decision
 from verification.verifier import MAX_READ_ATTEMPTS, verify_action
 
 
@@ -113,16 +112,6 @@ def _set_policy_config(conn: psycopg.Connection, merchant_id: str, config: dict[
             "update merchants set policy_config = %s where id = %s",
             (psycopg.types.json.Jsonb(config), merchant_id),
         )
-
-
-def _insert_capture_decision(conn: psycopg.Connection, merchant_id: str, order_id: str, payment_attempt_id: str, amount: int):
-    return insert_decision(
-        conn, merchant_id, order_id, payment_attempt_id,
-        str(list_events_for_order(conn, order_id)[0]["id"]),
-        {"fields": []}, {"bucket_key": "n/a", "expected_recovery_rate": 1.0, "sample_size": 0, "source": "test_fixture"},
-        "RECOMMEND_CAPTURE", 1.0, ["TEST_FIXTURE_CAPTURE_RECOMMENDATION"],
-        {"revenue_at_stake": amount}, "test_fixture",
-    )
 
 
 def _make_verifying_action(
