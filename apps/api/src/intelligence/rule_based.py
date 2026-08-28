@@ -14,6 +14,25 @@ Locked decisions from Phase 3 gate review:
     outcomes -- "we are sure there's nothing to recommend here" -- not a
     probabilistic recovery estimate, so tying them to
     expected_recovery_rate would misrepresent what the number means).
+
+RECOMMEND_CAPTURE rule (closes the previous "hand-constructed Decision"
+gap in Scenario A/B): fires only when the context's own `status` field
+is exactly "authorized" -- never inferred merely from the absence of an
+error_source/error_reason, since a captured or otherwise-unusual context
+also has no error fields and must NOT be mistaken for capture-eligible.
+
+CONFIDENCE SEMANTICS FOR THIS RULE: confidence=1.0 here means the
+deterministic rule is certain the OBSERVED CONTEXT satisfies the rule
+(status is unambiguously "authorized") -- it is NOT a claim that the
+capture call itself has a 100% probability of succeeding. Whether the
+capture actually succeeds is entirely Action's and Verification's
+concern, established independently afterward; this number never feeds
+into or substitutes for that.
+
+No amount-based gating happens here, deliberately: RuleBasedEngine
+recommends capture for an authorized payment regardless of amount.
+Auto-allow / approval-required / hard-block is Policy's exclusive
+responsibility -- see policy/rules.py.
 """
 
 from __future__ import annotations
@@ -51,7 +70,25 @@ class RuleBasedEngine:
 
         error_source = _field_value(context, "error_source")
         error_reason = _field_value(context, "error_reason")
+        status = _field_value(context, "status")
         attempt_number = _field_value(context, "attempt_number")
+
+        # Authorized-and-not-yet-captured -- eligible for a capture
+        # recommendation regardless of attempt_number (that counter is a
+        # retry-prompt-specific stopping rule, not applicable to a
+        # definite, already-successful authorization) and regardless of
+        # amount (Policy's job, not this engine's). Explicitly requires
+        # status == "authorized" -- NOT merely "no error_source/
+        # error_reason present", since a captured context also has none.
+        if status == "authorized":
+            amount = _field_value(context, "amount")
+            return DecisionOutput(
+                decision_type=DecisionType.RECOMMEND_CAPTURE,
+                confidence=1.0,
+                reason_codes=["AUTHORIZED_PAYMENT_ELIGIBLE_FOR_CAPTURE"],
+                expected_impact={"revenue_at_stake": amount} if amount is not None else {},
+                model_version=MODEL_VERSION,
+            )
 
         if error_source == "customer" and error_reason == "payment_cancelled":
             return self._no_action(["CUSTOMER_CANCELLED", "NO_ACTION_REQUIRED"])
@@ -73,11 +110,9 @@ class RuleBasedEngine:
             )
 
         # Any other payment-attempt context this gate doesn't have a rule
-        # for -- e.g. an authorized/captured attempt (no failure to
-        # recover from) or an unrecognized error_source. Explicitly
-        # NO_ACTION rather than guessing. Capture-recommendation logic
-        # was not part of the approved gate scope and is deliberately
-        # deferred, not silently implemented here.
+        # for -- e.g. a captured attempt (already done, nothing to
+        # recommend), an unrecognized status value, or an unrecognized
+        # error_source. Explicitly NO_ACTION rather than guessing.
         return self._no_action(["NO_RECOMMENDATION_RULE_MATCHED"])
 
     def _no_action(self, reason_codes: list[str]) -> DecisionOutput:

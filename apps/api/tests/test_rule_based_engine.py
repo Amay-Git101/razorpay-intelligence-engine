@@ -112,3 +112,90 @@ def test_recommend_retry_prompt_includes_expected_impact_amount():
     output = engine.evaluate(context, _expectation(0.6, 5))
 
     assert output.expected_impact.get("revenue_at_stake") == 75000
+
+
+# ---------------------------------------------------------------------------
+# RECOMMEND_CAPTURE rule -- closes the previous "hand-constructed
+# Decision" gap in Scenario A/B (see intelligence/rule_based.py module
+# docstring for the full confidence-semantics explanation).
+# ---------------------------------------------------------------------------
+
+def test_authorized_payment_recommends_capture_with_deterministic_confidence():
+    engine = RuleBasedEngine()
+    context = _payment_context(status="authorized", amount=10000)
+    output = engine.evaluate(context, _expectation(0.5, 0, "rule_v1_default"))
+
+    assert output.decision_type == DecisionType.RECOMMEND_CAPTURE
+    assert output.confidence == 1.0
+    assert output.reason_codes == ["AUTHORIZED_PAYMENT_ELIGIBLE_FOR_CAPTURE"]
+    assert output.expected_impact.get("revenue_at_stake") == 10000
+    assert output.model_version == "rule_v1"
+
+
+def test_authorized_payment_recommends_capture_regardless_of_amount():
+    # No amount-based gating in the engine -- Policy alone decides
+    # allow/block/approval. A large amount must still get the SAME
+    # recommendation as a small one.
+    engine = RuleBasedEngine()
+    small = engine.evaluate(_payment_context(status="authorized", amount=10000), _expectation(0.5, 0, "rule_v1_default"))
+    large = engine.evaluate(_payment_context(status="authorized", amount=500000), _expectation(0.5, 0, "rule_v1_default"))
+
+    assert small.decision_type == large.decision_type == DecisionType.RECOMMEND_CAPTURE
+    assert small.confidence == large.confidence == 1.0
+
+
+def test_authorized_payment_recommends_capture_regardless_of_attempt_number():
+    # attempt_number / max_retry_attempts is a retry-PROMPT stopping
+    # rule -- it must not suppress a definite capture recommendation.
+    engine = RuleBasedEngine(max_retry_attempts=3)
+    context = _payment_context(status="authorized", amount=10000, _attempt_number=5)
+    output = engine.evaluate(context, _expectation(0.5, 0, "rule_v1_default"))
+
+    assert output.decision_type == DecisionType.RECOMMEND_CAPTURE
+
+
+def test_captured_payment_does_not_recommend_capture():
+    # The absence of error_source/error_reason is NOT sufficient proof
+    # of capture-eligibility -- a captured context also has none, and
+    # must not be mistaken for capture-ready.
+    engine = RuleBasedEngine()
+    context = _payment_context(status="captured", amount=10000)
+    output = engine.evaluate(context, _expectation(0.5, 0, "rule_v1_default"))
+
+    assert output.decision_type == DecisionType.NO_ACTION
+    assert "NO_RECOMMENDATION_RULE_MATCHED" in output.reason_codes
+
+
+def test_unrecognized_status_does_not_recommend_capture():
+    engine = RuleBasedEngine()
+    context = _payment_context(status="refunded", amount=10000)
+    output = engine.evaluate(context, _expectation(0.5, 0, "rule_v1_default"))
+
+    assert output.decision_type == DecisionType.NO_ACTION
+    assert "NO_RECOMMENDATION_RULE_MATCHED" in output.reason_codes
+
+
+def test_failed_payment_with_status_still_follows_existing_failure_rule():
+    # Adding status="failed" alongside a genuine failure context must not
+    # change the existing, already-approved failure-handling behavior.
+    engine = RuleBasedEngine()
+    context = _payment_context(
+        status="failed", error_source="gateway", error_step="payment_authorization",
+        error_reason="payment_failed", _attempt_number=1,
+    )
+    output = engine.evaluate(context, _expectation(0.73, 25))
+
+    assert output.decision_type == DecisionType.RECOMMEND_RETRY_PROMPT
+    assert output.confidence == 0.73
+
+
+def test_customer_cancelled_with_status_still_returns_no_action():
+    engine = RuleBasedEngine()
+    context = _payment_context(
+        status="failed", error_source="customer", error_step="payment_authentication",
+        error_reason="payment_cancelled", _attempt_number=1,
+    )
+    output = engine.evaluate(context, _expectation(0.9, 50))
+
+    assert output.decision_type == DecisionType.NO_ACTION
+    assert "CUSTOMER_CANCELLED" in output.reason_codes

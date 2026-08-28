@@ -11,6 +11,13 @@ A payload missing a field required for its event category raises
 ContextBuildError. It never falls back to None or a fabricated value --
 a malformed/incomplete observation must be visibly rejected, not quietly
 smoothed over.
+
+`status` is a REQUIRED RAW field on every payment-attempt context (added
+alongside `amount`) -- it is what lets RuleBasedEngine distinguish an
+authorized-and-not-yet-captured payment (eligible for a capture
+recommendation) from a captured one, without guessing from the absence
+of error fields. A missing status raises ContextBuildError; nothing here
+ever defaults it.
 """
 
 from __future__ import annotations
@@ -66,9 +73,11 @@ def _build_payment_attempt_context(
 ) -> ContextSnapshot:
     payment_attempt_id = event["entity_id"]
     amount = _require(payload, "amount")
+    status = _require(payload, "status")
 
     fields = [
         ProvenancedField(field="amount", value=amount, band=ProvenanceBand.RAW, source="razorpay_api_poll"),
+        ProvenancedField(field="status", value=status, band=ProvenanceBand.RAW, source="razorpay_api_poll"),
     ]
 
     # method is NOT required: only 'card' is VERIFIED, and even for card

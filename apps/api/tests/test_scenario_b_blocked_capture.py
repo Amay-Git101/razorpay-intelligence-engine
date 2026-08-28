@@ -5,31 +5,25 @@
 Same merchant, same policy_config as Scenario A -- only the amount
 differs. This deliberately demonstrates "the same recommendation, a
 different policy verdict" purely as a function of amount, not a
-different merchant configuration.
+different merchant configuration: RuleBasedEngine has no amount-based
+gating (that's Policy's exclusive job), so both scenarios receive the
+SAME RECOMMEND_CAPTURE recommendation from the SAME engine call, and
+only Policy's verdict diverges.
 
 Composes ONLY existing production modules -- see
 test_scenario_a_recoverable_capture.py's module docstring for the full
-reasoning on why the Decision here is hand-supplied rather than produced
-by RuleBasedEngine (an explicitly out-of-scope capability gap for this
-gate, not a workaround). No production src/ code was added or modified.
+reasoning on the RuleBasedEngine capture rule this now genuinely
+exercises (no hand-constructed Decision remains in either scenario).
 """
 
 from __future__ import annotations
 
 from action.orchestrator import propose_action
-from context.builder import build_context_snapshot
-from domain.contracts import Expectation
-from intelligence.expectation import ZERO_EVIDENCE_SOURCE
+from intelligence.orchestration import make_decision
 from reconciliation.service import reconcile_order
-from repository.audit import insert_audit_entry
 from repository.canonical_events import list_events_for_order
-from support import (
-    FakeReconciliationClient,
-    SpyWriteClient,
-    full_audit_trail,
-    insert_capture_decision,
-    set_policy_config,
-)
+from repository.decisions import get_decision
+from support import FakeReconciliationClient, SpyWriteClient, full_audit_trail, set_policy_config
 
 
 def test_scenario_b_blocked_capture_makes_zero_razorpay_calls(db_conn, demo_merchant_id):
@@ -45,28 +39,22 @@ def test_scenario_b_blocked_capture_makes_zero_razorpay_calls(db_conn, demo_merc
     events = list_events_for_order(db_conn, order_id)
     authorized_event = next(e for e in events if e["event_type"] == "payment.attempt.authorized")
 
-    # ---- 2. Context (real production call) ----
-    context = build_context_snapshot(db_conn, authorized_event)
-    amount_field = next(f for f in context.fields if f.field == "amount")
-    assert amount_field.value == amount
+    # ---- 2-4. Context + Expectation + RuleBasedEngine + Decision
+    #           persistence, all real production code. RuleBasedEngine
+    #           recommends capture regardless of amount -- SAME
+    #           recommendation as Scenario A. ----
+    decision_id = make_decision(db_conn, demo_merchant_id, authorized_event)
 
-    # ---- 3. Expectation: zero-evidence default (no error_reason to bucket on) ----
-    expectation = Expectation(
-        bucket_key="no_error_reason", expected_recovery_rate=0.5, sample_size=0, source=ZERO_EVIDENCE_SOURCE
-    )
-    assert expectation.source == ZERO_EVIDENCE_SOURCE
-
-    # ---- 4. Decision: hand-supplied RECOMMEND_CAPTURE ----
-    decision_id = insert_capture_decision(db_conn, demo_merchant_id, order_id, payment_id, amount=amount)
-    # See test_scenario_a_recoverable_capture.py for why this is written
-    # here rather than inside the shared insert_capture_decision() helper.
-    insert_audit_entry(
-        db_conn, "DECISION_CREATED", {"decision_type": "RECOMMEND_CAPTURE"},
-        event_id=str(authorized_event["id"]), decision_id=str(decision_id),
-    )
+    decision = get_decision(db_conn, decision_id)
+    assert decision["decision_type"] == "RECOMMEND_CAPTURE"
+    assert float(decision["confidence"]) == 1.0
+    assert decision["reason_codes"] == ["AUTHORIZED_PAYMENT_ELIGIBLE_FOR_CAPTURE"]
+    assert decision["model_version"] == "rule_v1"
 
     # ---- 5. Policy blocks; Action never reaches EXECUTING (real production call) ----
-    # SAME policy_config as Scenario A -- only the amount differs.
+    # SAME policy_config as Scenario A -- only the amount differs. This is
+    # where the two scenarios' outcomes actually diverge: Policy, not
+    # RuleBasedEngine.
     set_policy_config(db_conn, demo_merchant_id, {"max_auto_capture_amount": 20000, "approval_band_upper": 100000})
     write_spy = SpyWriteClient()
     action = propose_action(db_conn, decision_id, write_client=write_spy)

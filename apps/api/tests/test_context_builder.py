@@ -129,6 +129,42 @@ def test_attempt_number_correct_for_second_and_third_attempt(db_conn, demo_merch
 
 
 # ---------------------------------------------------------------------------
+# status is a REQUIRED RAW field on payment-attempt contexts
+# ---------------------------------------------------------------------------
+
+def test_authorized_payment_context_includes_status_field(db_conn, demo_merchant_id):
+    order_id = "order_ctx_authorized_status"
+    client = _FakeClient(
+        order=_order_fixture(order_id, "created", 0, 50000, 1),
+        payments=[_payment_fixture("pay_ctx_auth", order_id, "authorized", False)],
+    )
+    reconcile_order(db_conn, client, demo_merchant_id, order_id)
+    events = list_events_for_order(db_conn, order_id)
+    event = _find_event(events, "payment.attempt.authorized", "pay_ctx_auth")
+
+    snapshot = build_context_snapshot(db_conn, event)
+
+    status_field = _field(snapshot, "status")
+    assert status_field.value == "authorized"
+    assert status_field.band == ProvenanceBand.RAW
+
+
+def test_captured_payment_context_includes_status_field(db_conn, demo_merchant_id):
+    order_id = "order_ctx_captured_status"
+    client = _FakeClient(
+        order=_order_fixture(order_id, "paid", 50000, 0, 1),
+        payments=[_payment_fixture("pay_ctx_cap", order_id, "captured", True)],
+    )
+    reconcile_order(db_conn, client, demo_merchant_id, order_id)
+    events = list_events_for_order(db_conn, order_id)
+    event = _find_event(events, "payment.attempt.captured", "pay_ctx_cap")
+
+    snapshot = build_context_snapshot(db_conn, event)
+
+    assert _field(snapshot, "status").value == "captured"
+
+
+# ---------------------------------------------------------------------------
 # Order-level event -> order-scoped context, no payment fields forced in
 # ---------------------------------------------------------------------------
 
@@ -164,6 +200,17 @@ def test_missing_amount_on_payment_event_raises(db_conn):
         "payload": {"method": "card"},  # amount deliberately missing
     }
     with pytest.raises(ContextBuildError, match="amount"):
+        build_context_snapshot(db_conn, fake_event)
+
+
+def test_missing_status_on_payment_event_raises(db_conn):
+    fake_event = {
+        "event_type": "payment.attempt.failed",
+        "entity_id": "pay_fake",
+        "order_id": "order_fake",
+        "payload": {"amount": 50000},  # status deliberately missing, amount present
+    }
+    with pytest.raises(ContextBuildError, match="status"):
         build_context_snapshot(db_conn, fake_event)
 
 

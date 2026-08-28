@@ -153,6 +153,46 @@ def test_make_decision_twice_creates_two_distinct_decision_rows(db_conn, demo_me
     assert get_decision(db_conn, second_id) is not None
 
 
+def test_make_decision_for_authorized_payment_recommends_capture(db_conn, demo_merchant_id):
+    # Closes the previous "hand-constructed Decision" gap: this is a
+    # genuine make_decision() call on a real authorized-payment event,
+    # producing a real RECOMMEND_CAPTURE Decision through RuleBasedEngine
+    # -- not a test fixture.
+    order_id = "order_dec_authorized_capture"
+    client = _FakeClient(
+        order=_order_fixture(order_id, "created", 0, 50000, 1),
+        payments=[_payment_fixture("pay_dec_auth", order_id, "authorized", False)],
+    )
+    reconcile_order(db_conn, client, demo_merchant_id, order_id)
+    event = _find_event(list_events_for_order(db_conn, order_id), "payment.attempt.authorized", "pay_dec_auth")
+
+    decision_id = make_decision(db_conn, demo_merchant_id, event)
+
+    decision = get_decision(db_conn, decision_id)
+    assert decision["decision_type"] == "RECOMMEND_CAPTURE"
+    assert float(decision["confidence"]) == 1.0
+    assert decision["reason_codes"] == ["AUTHORIZED_PAYMENT_ELIGIBLE_FOR_CAPTURE"]
+    assert decision["model_version"] == "rule_v1"
+    assert decision["expected_impact"]["revenue_at_stake"] == 50000
+    assert decision["payment_attempt_id"] == "pay_dec_auth"
+
+
+def test_make_decision_for_captured_payment_does_not_recommend_capture(db_conn, demo_merchant_id):
+    order_id = "order_dec_already_captured"
+    client = _FakeClient(
+        order=_order_fixture(order_id, "paid", 50000, 0, 1),
+        payments=[_payment_fixture("pay_dec_already_cap", order_id, "captured", True)],
+    )
+    reconcile_order(db_conn, client, demo_merchant_id, order_id)
+    event = _find_event(list_events_for_order(db_conn, order_id), "payment.attempt.captured", "pay_dec_already_cap")
+
+    decision_id = make_decision(db_conn, demo_merchant_id, event)
+
+    decision = get_decision(db_conn, decision_id)
+    assert decision["decision_type"] == "NO_ACTION"
+    assert "NO_RECOMMENDATION_RULE_MATCHED" in decision["reason_codes"]
+
+
 def test_no_error_reason_context_does_not_create_baseline_row(db_conn, demo_merchant_id):
     order_id = "order_dec_no_baseline_pollution"
     client = _FakeClient(
