@@ -22,18 +22,24 @@ def insert_action(
     status: str,
 ) -> UUID:
     try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                insert into actions (decision_id, idempotency_key, action_type, policy_evaluation, status)
-                values (%s, %s, %s, %s, %s)
-                returning id
-                """,
-                (decision_id, idempotency_key, action_type, psycopg.types.json.Json(policy_evaluation), status),
-            )
-            return cur.fetchone()[0]
+        # Same savepoint reasoning as
+        # payment_attempts.update_payment_attempt_status: a plain
+        # conn.rollback() here would abort the entire surrounding
+        # transaction, not just this insert. This was not exercised by
+        # the currently-failing tests, but is the same bug class and is
+        # fixed proactively for consistency.
+        with conn.transaction():
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    insert into actions (decision_id, idempotency_key, action_type, policy_evaluation, status)
+                    values (%s, %s, %s, %s, %s)
+                    returning id
+                    """,
+                    (decision_id, idempotency_key, action_type, psycopg.types.json.Json(policy_evaluation), status),
+                )
+                return cur.fetchone()[0]
     except psycopg.errors.UniqueViolation as exc:
-        conn.rollback()
         raise DuplicateAction(idempotency_key) from exc
 
 

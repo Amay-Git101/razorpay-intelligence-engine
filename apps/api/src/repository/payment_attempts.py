@@ -66,15 +66,22 @@ def update_payment_attempt_status(
     which this function translates into InvalidPaymentAttemptTransition
     so callers never mistake it for an ordinary DB error."""
     try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                update payment_attempts
-                set status = %s, captured = %s, raw_reference = %s, observed_at = now()
-                where id = %s
-                """,
-                (new_status, captured, psycopg.types.json.Json(raw_reference), payment_attempt_id),
-            )
+        # conn.transaction() opens a SAVEPOINT here (the connection is
+        # already inside an outer transaction by this point in normal
+        # use). On the trigger's raised exception, only this savepoint is
+        # rolled back -- everything committed/staged earlier in the
+        # surrounding transaction is preserved. Using conn.rollback()
+        # here would instead abort the *entire* connection-level
+        # transaction, silently discarding unrelated prior work.
+        with conn.transaction():
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    update payment_attempts
+                    set status = %s, captured = %s, raw_reference = %s, observed_at = now()
+                    where id = %s
+                    """,
+                    (new_status, captured, psycopg.types.json.Json(raw_reference), payment_attempt_id),
+                )
     except psycopg.errors.RaiseException as exc:
-        conn.rollback()
         raise InvalidPaymentAttemptTransition(str(exc)) from exc

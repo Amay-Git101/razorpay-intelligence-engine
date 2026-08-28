@@ -145,7 +145,14 @@ create table decisions (
     id                  uuid primary key default gen_random_uuid(),
     merchant_id         uuid not null references merchants(id),
     order_id            text not null references orders(id),
-    payment_attempt_id  text references payment_attempts(id),
+    -- Deliberately a SOFT reference (nullable text, no FK): Phase 2
+    -- Revision 2 requires this because not every canonical event is
+    -- payment-attempt-scoped (e.g. order.paid has no payment_attempt_id
+    -- at all). A hard FK here would make such decisions impossible to
+    -- insert. See 0002_decisions_payment_attempt_id_soft_reference.sql
+    -- for the migration that corrects this on databases where 0001 was
+    -- already applied with the FK present.
+    payment_attempt_id  text,
     event_id            uuid not null references canonical_events(id),
     context_snapshot    jsonb not null,
     expectation         jsonb not null,
