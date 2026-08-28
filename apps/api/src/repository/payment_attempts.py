@@ -19,6 +19,19 @@ def get_payment_attempt(conn: psycopg.Connection, payment_attempt_id: str) -> di
         return cur.fetchone()
 
 
+def list_payment_attempts_for_order(conn: psycopg.Connection, order_id: str) -> list[dict[str, Any]]:
+    """Authoritative source for 'how many attempts exist on this order' --
+    the context builder derives attempt_number from this, never from
+    canonical_events (which can contain non-payment-attempt-count
+    entries, e.g. an anomaly event or an order.paid event)."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            "select * from payment_attempts where order_id = %s order by observed_at asc",
+            (order_id,),
+        )
+        return cur.fetchall()
+
+
 def insert_payment_attempt(
     conn: psycopg.Connection,
     payment_attempt_id: str,
