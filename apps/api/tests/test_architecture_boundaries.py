@@ -15,6 +15,18 @@ rather than relying on convention/code review alone:
    src/intelligence/, src/policy/, or src/action/ may import it -- an
    observational metric must never be able to feed back into a runtime
    decision.
+6. src/evaluation/* never imports the Razorpay write client or the
+   execution/verification write paths, never imports policy/action/
+   verification/reconciliation at all, and never imports psycopg (it
+   must remain fully independent of the database). It MAY import
+   intelligence.rule_based and domain.contracts -- that dependency
+   direction is intentional, since RuleBasedEngine is the system under
+   evaluation.
+7. src/evaluation/* is strictly downstream: nothing under
+   src/context/, src/intelligence/, src/policy/, src/action/,
+   src/verification/, src/reconciliation/, or src/observability/ may
+   import it -- an evaluation harness must never become a dependency of
+   any production runtime path.
 
 Pure Python, no DB required.
 """
@@ -138,4 +150,63 @@ def test_intelligence_policy_action_never_import_observability():
     assert offenders == [], (
         f"observability is strictly downstream/read-only and must never be imported "
         f"by a runtime decision path: {offenders}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# evaluation/ is independent of the database and strictly downstream, but
+# is intentionally allowed to depend on intelligence.rule_based -- that is
+# the system under evaluation.
+# ---------------------------------------------------------------------------
+
+def test_evaluation_module_never_imports_razorpay_write_client_or_execution_paths():
+    forbidden_substrings = ("razorpay_write_client", "action.orchestrator", "verification.verifier")
+    offenders = []
+    for path in _all_py_files(SRC_ROOT / "evaluation"):
+        text = path.read_text(encoding="utf-8")
+        for forbidden in forbidden_substrings:
+            if forbidden in text:
+                offenders.append(f"{path.relative_to(SRC_ROOT)}: {forbidden}")
+    assert offenders == [], f"src/evaluation/ must not import execution/write paths: {offenders}"
+
+
+def test_evaluation_module_never_imports_psycopg():
+    offenders = []
+    for path in _all_py_files(SRC_ROOT / "evaluation"):
+        text = path.read_text(encoding="utf-8")
+        if "psycopg" in text:
+            offenders.append(str(path.relative_to(SRC_ROOT)))
+    assert offenders == [], f"src/evaluation/ must remain independent of the database: {offenders}"
+
+
+def test_evaluation_module_never_imports_policy_action_verification_reconciliation():
+    forbidden_markers = (
+        "from policy", "import policy",
+        "from action", "import action",
+        "from verification", "import verification",
+        "from reconciliation", "import reconciliation",
+    )
+    offenders = []
+    for path in _all_py_files(SRC_ROOT / "evaluation"):
+        text = path.read_text(encoding="utf-8")
+        for marker in forbidden_markers:
+            if marker in text:
+                offenders.append(f"{path.relative_to(SRC_ROOT)}: {marker}")
+    assert offenders == [], (
+        f"src/evaluation/ may depend only on intelligence.rule_based and domain.contracts: {offenders}"
+    )
+
+
+def test_production_runtime_never_imports_evaluation():
+    forbidden_markers = ("from evaluation", "import evaluation", "evaluation.harness")
+    offenders = []
+    for package in ("context", "intelligence", "policy", "action", "verification", "reconciliation", "observability"):
+        for path in _all_py_files(SRC_ROOT / package):
+            text = path.read_text(encoding="utf-8")
+            for marker in forbidden_markers:
+                if marker in text:
+                    offenders.append(f"{path.relative_to(SRC_ROOT)}: {marker}")
+    assert offenders == [], (
+        f"evaluation/ is strictly downstream and must never be imported by production "
+        f"runtime code: {offenders}"
     )

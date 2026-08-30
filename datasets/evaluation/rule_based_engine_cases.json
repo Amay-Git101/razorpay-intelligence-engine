@@ -1,0 +1,536 @@
+[
+  {
+    "case_id": "order_level_event_no_payment_attempt_to_act_on",
+    "description": "An order-level event (order.created) carries no specific payment attempt. No project document or verifiable prior gate-approval record explicitly discusses order-level NO_ACTION as a reviewed decision (git history for rule_based.py shows two commits -- d10ac06 and 34c6762 -- and neither commit message lists this as a 'locked rule from gate review', unlike the five items each does explicitly enumerate). It is a reasonable reading of master handoff §9's order-level vs payment-attempt-level separation and §14's transaction-scoped Decision Contract, but that reading was constructed during this evaluation's own authoring, not previously reviewed and approved -- so it is honestly tiered as an assumption, not engineering_authored.",
+    "behavior_area": "order_level_no_payment_attempt",
+    "context": {
+      "order_id": "eval_order_a1",
+      "payment_attempt_id": null,
+      "fields": [
+        {"field": "amount", "value": 50000, "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "amount_paid", "value": 0, "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "amount_due", "value": 50000, "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "status", "value": "created", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "attempts", "value": 1, "band": "RAW", "source": "razorpay_api_poll"}
+      ]
+    },
+    "expectation": {"bucket_key": "no_error_reason", "expected_recovery_rate": 0.5, "sample_size": 0, "source": "rule_v1_default"},
+    "expected": {
+      "decision_type": {
+        "value": "NO_ACTION",
+        "tier": "inference_assumption",
+        "reference": "No commit message for rule_based.py (checked: git log --oneline --follow -- apps/api/src/intelligence/rule_based.py -> commits d10ac06, 34c6762) lists order-level NO_ACTION as a reviewed decision. This case applies master handoff §9/§14's documented structure as this evaluation's own reasoned inference, not a citation of a prior approval."
+      }
+    }
+  },
+  {
+    "case_id": "authorized_card_payment_recommends_capture",
+    "description": "An authorized card payment that has not yet been captured. Per §9, capture applies to an already-authorized payment -- this is the canonical capture-eligible scenario.",
+    "behavior_area": "authorized_payment_capture_eligible",
+    "context": {
+      "order_id": "eval_order_b1",
+      "payment_attempt_id": "eval_pay_b1",
+      "fields": [
+        {"field": "status", "value": "authorized", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "amount", "value": 10000, "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "method", "value": "card", "band": "RAW", "source": "razorpay_api_poll"}
+      ]
+    },
+    "expectation": {"bucket_key": "no_error_reason", "expected_recovery_rate": 0.5, "sample_size": 0, "source": "rule_v1_default"},
+    "expected": {
+      "decision_type": {
+        "value": "RECOMMEND_CAPTURE",
+        "tier": "project_defined",
+        "reference": "razorpay_master_claude_code_handoff_v1.md §9 (CRITICAL PAYMENT-ATTEMPT CORRECTION): 'Capture applies to an already-authorized payment.'"
+      },
+      "confidence": {
+        "value": "fixed_1_0",
+        "tier": "engineering_authored",
+        "reference": "Git commit 34c6762 ('Phase 3 gate: RuleBasedEngine RECOMMEND_CAPTURE rule ...'), commit message: 'confidence=1.0 is documented explicitly as certainty about the OBSERVED CONTEXT matching the rule, not a claim about the capture call's probability of success.' Verifiable via `git show 34c6762` -- an independently checkable project artifact, not this session's memory."
+      }
+    }
+  },
+  {
+    "case_id": "authorized_upi_payment_capture_eligible_regardless_of_method",
+    "description": "An authorized payment via a non-card method (UPI). §9's capture rule is stated without any method qualification ('capture applies to an already-authorized payment') -- applying it to a non-card method is a direct, minimal-interpretation instance of the same documented rule.",
+    "behavior_area": "authorized_payment_capture_eligible",
+    "context": {
+      "order_id": "eval_order_b2",
+      "payment_attempt_id": "eval_pay_b2",
+      "fields": [
+        {"field": "status", "value": "authorized", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "amount", "value": 25000, "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "method", "value": "upi", "band": "RAW", "source": "razorpay_api_poll"}
+      ]
+    },
+    "expectation": {"bucket_key": "no_error_reason", "expected_recovery_rate": 0.5, "sample_size": 0, "source": "rule_v1_default"},
+    "expected": {
+      "decision_type": {
+        "value": "RECOMMEND_CAPTURE",
+        "tier": "project_defined",
+        "reference": "razorpay_master_claude_code_handoff_v1.md §9: the capture rule names no payment method qualifier."
+      },
+      "confidence": {
+        "value": "fixed_1_0",
+        "tier": "engineering_authored",
+        "reference": "Same git commit 34c6762 citation as authorized_card_payment_recommends_capture."
+      }
+    }
+  },
+  {
+    "case_id": "authorized_payment_with_incidental_fields_still_capture_eligible",
+    "description": "An authorized payment that also carries incidental error_source/error_reason fields -- a synthetic combination (in real Razorpay data, error fields are only populated on failed payments, so this would not co-occur with status='authorized'). Commit 34c6762's message states the capture check is made 'explicitly against status == \\\"authorized\\\" (never inferred merely from error_source/error_reason being None...)', which is suggestive but is a guard against a different failure mode (wrongly inferring capture-ineligibility from absent error fields), not a direct statement that PRESENT incidental error fields are ignored. Not a strong enough match to cite as engineering_authored -- tiered as an assumption.",
+    "behavior_area": "authorized_payment_capture_eligible",
+    "context": {
+      "order_id": "eval_order_b3",
+      "payment_attempt_id": "eval_pay_b3",
+      "fields": [
+        {"field": "status", "value": "authorized", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "amount", "value": 15000, "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "error_source", "value": "gateway", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "error_step", "value": "payment_authorization", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "error_reason", "value": "payment_failed", "band": "RAW", "source": "razorpay_api_poll"}
+      ]
+    },
+    "expectation": {"bucket_key": "error_reason:payment_failed", "expected_recovery_rate": 0.7, "sample_size": 10, "source": "rule_v1"},
+    "expected": {
+      "decision_type": {
+        "value": "RECOMMEND_CAPTURE",
+        "tier": "inference_assumption",
+        "reference": "Own extension of §9's unconditional capture-rule phrasing to a synthetic edge case; commit 34c6762's text on the status check is suggestive but does not directly address co-occurring incidental fields. An interpretive stretch, not a reviewed decision."
+      }
+    }
+  },
+  {
+    "case_id": "authorized_large_amount_not_gated_by_amount",
+    "description": "An authorized payment for a very large amount -- one Policy would in production block via the hard-limit band. The recommendation itself must be identical regardless: this evaluation never invokes Policy, and the amount-gating decision belongs entirely to a separately approved rule.",
+    "behavior_area": "authorized_payment_capture_eligible",
+    "context": {
+      "order_id": "eval_order_b4",
+      "payment_attempt_id": "eval_pay_b4",
+      "fields": [
+        {"field": "status", "value": "authorized", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "amount", "value": 500000, "band": "RAW", "source": "razorpay_api_poll"}
+      ]
+    },
+    "expectation": {"bucket_key": "no_error_reason", "expected_recovery_rate": 0.5, "sample_size": 0, "source": "rule_v1_default"},
+    "expected": {
+      "decision_type": {
+        "value": "RECOMMEND_CAPTURE",
+        "tier": "engineering_authored",
+        "reference": "Git commit 34c6762, commit message: the RECOMMEND_CAPTURE rule '... applies regardless of amount -- Policy alone remains responsible for auto-allow/approval-required/hard-block.' Verifiable via `git show 34c6762`."
+      },
+      "confidence": {
+        "value": "fixed_1_0",
+        "tier": "engineering_authored",
+        "reference": "Same git commit 34c6762 citation as authorized_card_payment_recommends_capture."
+      }
+    }
+  },
+  {
+    "case_id": "authorized_zero_amount_not_gated_by_amount",
+    "description": "An authorized payment with amount exactly zero -- a numeric edge case directly within the scope of the same approved no-amount-gating decision (which is stated unconditionally on amount, not just 'amounts above zero').",
+    "behavior_area": "authorized_payment_capture_eligible",
+    "context": {
+      "order_id": "eval_order_b5",
+      "payment_attempt_id": "eval_pay_b5",
+      "fields": [
+        {"field": "status", "value": "authorized", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "amount", "value": 0, "band": "RAW", "source": "razorpay_api_poll"}
+      ]
+    },
+    "expectation": {"bucket_key": "no_error_reason", "expected_recovery_rate": 0.5, "sample_size": 0, "source": "rule_v1_default"},
+    "expected": {
+      "decision_type": {
+        "value": "RECOMMEND_CAPTURE",
+        "tier": "engineering_authored",
+        "reference": "Same git commit 34c6762 citation as authorized_large_amount_not_gated_by_amount -- the 'regardless of amount' statement is unconditional, covering zero as a value of amount."
+      },
+      "confidence": {
+        "value": "fixed_1_0",
+        "tier": "engineering_authored",
+        "reference": "Same git commit 34c6762 citation as authorized_card_payment_recommends_capture."
+      }
+    }
+  },
+  {
+    "case_id": "authorized_payment_high_attempt_number_still_capture_eligible",
+    "description": "An authorized payment observed at a very high attempt_number. Commit 34c6762's message explicitly states the capture rule is 'Placed before the max_retry_attempts check (a retry-PROMPT stopping rule that must not suppress a definite capture recommendation)' -- a direct, contemporaneous statement that the retry-attempt ceiling must not override a capture recommendation.",
+    "behavior_area": "authorized_payment_capture_eligible",
+    "context": {
+      "order_id": "eval_order_b6",
+      "payment_attempt_id": "eval_pay_b6",
+      "fields": [
+        {"field": "status", "value": "authorized", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "amount", "value": 10000, "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "attempt_number", "value": 10, "band": "DERIVED", "source": "internal_count"}
+      ]
+    },
+    "expectation": {"bucket_key": "no_error_reason", "expected_recovery_rate": 0.5, "sample_size": 0, "source": "rule_v1_default"},
+    "expected": {
+      "decision_type": {
+        "value": "RECOMMEND_CAPTURE",
+        "tier": "engineering_authored",
+        "reference": "Git commit 34c6762, commit message: capture is 'Placed before the max_retry_attempts check (a retry-PROMPT stopping rule that must not suppress a definite capture recommendation) and applies regardless of amount'. Verifiable via `git show 34c6762`."
+      }
+    }
+  },
+  {
+    "case_id": "captured_payment_no_further_action",
+    "description": "A payment attempt already in the captured state, observed directly. No further recommendation should be produced -- the recovery/capture opportunity is already resolved.",
+    "behavior_area": "captured_payment_terminal",
+    "context": {
+      "order_id": "eval_order_c1",
+      "payment_attempt_id": "eval_pay_c1",
+      "fields": [
+        {"field": "status", "value": "captured", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "amount", "value": 50000, "band": "RAW", "source": "razorpay_api_poll"}
+      ]
+    },
+    "expectation": {"bucket_key": "no_error_reason", "expected_recovery_rate": 0.5, "sample_size": 0, "source": "rule_v1_default"},
+    "expected": {
+      "decision_type": {
+        "value": "NO_ACTION",
+        "tier": "project_defined",
+        "reference": "razorpay_master_claude_code_handoff_v1.md §9: a payment attempt already reached 'captured' is a resolved terminal state under the documented ORDER/PAYMENT-ATTEMPT model."
+      },
+      "confidence": {
+        "value": "fixed_1_0",
+        "tier": "inference_assumption",
+        "reference": "Neither project document nor either rule_based.py commit message (d10ac06, 34c6762) states numeric confidence for NO_ACTION outcomes generally. Treating a definitively-resolved terminal state as maximally confident is a reasonable but independently-unverified inference."
+      }
+    }
+  },
+  {
+    "case_id": "customer_cancelled_no_retry_prompt",
+    "description": "A payment failure caused by the customer cancelling (not a gateway-side issue). Commit d10ac06's message explicitly lists this as a locked rule from gate review.",
+    "behavior_area": "customer_cancelled_no_action",
+    "context": {
+      "order_id": "eval_order_d1",
+      "payment_attempt_id": "eval_pay_d1",
+      "fields": [
+        {"field": "status", "value": "failed", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "amount", "value": 30000, "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "error_source", "value": "customer", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "error_step", "value": "payment_authentication", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "error_reason", "value": "payment_cancelled", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "attempt_number", "value": 1, "band": "DERIVED", "source": "internal_count"}
+      ]
+    },
+    "expectation": {"bucket_key": "error_reason:payment_cancelled", "expected_recovery_rate": 0.5, "sample_size": 0, "source": "rule_v1_default"},
+    "expected": {
+      "decision_type": {
+        "value": "NO_ACTION",
+        "tier": "engineering_authored",
+        "reference": "Git commit d10ac06 ('Phase 3 gate: RuleBasedEngine + DecisionOutput + Decision persistence'), commit message, under 'Locked rules from gate review': 'Customer-side payment_cancelled -> NO_ACTION (CUSTOMER_CANCELLED/NO_ACTION_REQUIRED), never a retry prompt, regardless of available recovery rate.' Verifiable via `git show d10ac06`."
+      },
+      "reason_category": {
+        "value": "customer_initiated_no_action",
+        "tier": "engineering_authored",
+        "reference": "Same git commit d10ac06 citation -- the locked rule specifically names CUSTOMER_CANCELLED as the reason code, not a generic fallback."
+      },
+      "confidence": {
+        "value": "fixed_1_0",
+        "tier": "inference_assumption",
+        "reference": "Neither project document nor either rule_based.py commit message states numeric confidence for NO_ACTION outcomes generally."
+      }
+    }
+  },
+  {
+    "case_id": "customer_cancelled_high_recovery_rate_still_no_action",
+    "description": "The same customer-cancellation scenario, but paired with a high, well-calibrated expected_recovery_rate. Commit d10ac06's locked rule explicitly includes the phrase 'regardless of available recovery rate' -- this is not an extrapolation, it is the literal, directly-quoted scope of the original decision.",
+    "behavior_area": "customer_cancelled_no_action",
+    "context": {
+      "order_id": "eval_order_d2",
+      "payment_attempt_id": "eval_pay_d2",
+      "fields": [
+        {"field": "status", "value": "failed", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "amount", "value": 30000, "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "error_source", "value": "customer", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "error_step", "value": "payment_authentication", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "error_reason", "value": "payment_cancelled", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "attempt_number", "value": 1, "band": "DERIVED", "source": "internal_count"}
+      ]
+    },
+    "expectation": {"bucket_key": "error_reason:payment_cancelled", "expected_recovery_rate": 0.95, "sample_size": 80, "source": "rule_v1"},
+    "expected": {
+      "decision_type": {
+        "value": "NO_ACTION",
+        "tier": "engineering_authored",
+        "reference": "Same git commit d10ac06 citation as customer_cancelled_no_retry_prompt -- the locked rule's own text ('regardless of available recovery rate') directly covers this exact scenario, not merely an inferred extension."
+      },
+      "reason_category": {
+        "value": "customer_initiated_no_action",
+        "tier": "engineering_authored",
+        "reference": "Same git commit d10ac06 citation."
+      },
+      "confidence": {
+        "value": "fixed_1_0",
+        "tier": "inference_assumption",
+        "reference": "Neither project document nor either rule_based.py commit message states numeric confidence for NO_ACTION outcomes generally."
+      }
+    }
+  },
+  {
+    "case_id": "gateway_failure_recoverable_calibrated",
+    "description": "A gateway-side payment failure with a calibrated, evidence-backed recovery expectation. Per §11, this class of failure should surface a retry-prompt recommendation.",
+    "behavior_area": "gateway_failure_retry_recommendation",
+    "context": {
+      "order_id": "eval_order_e1",
+      "payment_attempt_id": "eval_pay_e1",
+      "fields": [
+        {"field": "status", "value": "failed", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "amount", "value": 40000, "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "error_source", "value": "gateway", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "error_step", "value": "payment_authorization", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "error_reason", "value": "payment_failed", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "attempt_number", "value": 1, "band": "DERIVED", "source": "internal_count"}
+      ]
+    },
+    "expectation": {"bucket_key": "error_reason:payment_failed", "expected_recovery_rate": 0.73, "sample_size": 25, "source": "rule_v1"},
+    "expected": {
+      "decision_type": {
+        "value": "RECOMMEND_RETRY_PROMPT",
+        "tier": "project_defined",
+        "reference": "razorpay_master_claude_code_handoff_v1.md §11 (first vertical slice): 'Payment failure -> Context analysis -> AI estimates recovery opportunity -> ... retry prompt'; §12 (Expectation Engine) grounds the expected-recovery-rate concept."
+      },
+      "confidence": {
+        "value": "equals_expected_recovery_rate",
+        "tier": "engineering_authored",
+        "reference": "Git commit d10ac06, commit message, under 'Locked rules from gate review': 'RECOMMEND_RETRY_PROMPT confidence is EXACTLY expectation.expected_recovery_rate - no discount formula, floor, or sample-size-weighting threshold.' Verifiable via `git show d10ac06`."
+      }
+    }
+  },
+  {
+    "case_id": "gateway_failure_zero_evidence_still_recommends",
+    "description": "The same gateway-failure scenario, but with no calibrated evidence yet (zero-evidence default expectation). §11's general framing does not condition the retry-prompt recommendation on prior calibration data existing.",
+    "behavior_area": "gateway_failure_retry_recommendation",
+    "context": {
+      "order_id": "eval_order_e2",
+      "payment_attempt_id": "eval_pay_e2",
+      "fields": [
+        {"field": "status", "value": "failed", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "amount", "value": 40000, "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "error_source", "value": "gateway", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "error_step", "value": "payment_authorization", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "error_reason", "value": "payment_failed", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "attempt_number", "value": 1, "band": "DERIVED", "source": "internal_count"}
+      ]
+    },
+    "expectation": {"bucket_key": "error_reason:payment_failed", "expected_recovery_rate": 0.5, "sample_size": 0, "source": "rule_v1_default"},
+    "expected": {
+      "decision_type": {
+        "value": "RECOMMEND_RETRY_PROMPT",
+        "tier": "project_defined",
+        "reference": "razorpay_master_claude_code_handoff_v1.md §11/§12 (same grounding as gateway_failure_recoverable_calibrated)."
+      },
+      "confidence": {
+        "value": "equals_expected_recovery_rate",
+        "tier": "engineering_authored",
+        "reference": "Same git commit d10ac06 citation as gateway_failure_recoverable_calibrated."
+      }
+    }
+  },
+  {
+    "case_id": "gateway_failure_low_recovery_rate_still_recommends",
+    "description": "A gateway-side failure paired with a low expected_recovery_rate. §11 speaks generally of a payment failure surfacing a recovery recommendation, without conditioning it on the rate being favorable; commit d10ac06's 'no discount formula, floor, or sample-size-weighting threshold' text directly supports the rate being surfaced as-is even when low.",
+    "behavior_area": "gateway_failure_retry_recommendation",
+    "context": {
+      "order_id": "eval_order_e3",
+      "payment_attempt_id": "eval_pay_e3",
+      "fields": [
+        {"field": "status", "value": "failed", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "amount", "value": 40000, "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "error_source", "value": "gateway", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "error_step", "value": "payment_authorization", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "error_reason", "value": "payment_failed", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "attempt_number", "value": 1, "band": "DERIVED", "source": "internal_count"}
+      ]
+    },
+    "expectation": {"bucket_key": "error_reason:payment_failed", "expected_recovery_rate": 0.2, "sample_size": 40, "source": "rule_v1"},
+    "expected": {
+      "decision_type": {
+        "value": "RECOMMEND_RETRY_PROMPT",
+        "tier": "project_defined",
+        "reference": "razorpay_master_claude_code_handoff_v1.md §11: general framing, no rate threshold stated."
+      },
+      "confidence": {
+        "value": "equals_expected_recovery_rate",
+        "tier": "engineering_authored",
+        "reference": "Same git commit d10ac06 citation as gateway_failure_recoverable_calibrated -- 'no discount formula, floor, or sample-size-weighting threshold' directly implies the rate is surfaced as-is regardless of its value."
+      }
+    }
+  },
+  {
+    "case_id": "gateway_failure_small_nonzero_sample",
+    "description": "A gateway-side failure with a very small but nonzero evidence sample (sample_size=1) -- a different point along the expectation-evidence spectrum from the zero-evidence and well-calibrated cases.",
+    "behavior_area": "gateway_failure_retry_recommendation",
+    "context": {
+      "order_id": "eval_order_e4",
+      "payment_attempt_id": "eval_pay_e4",
+      "fields": [
+        {"field": "status", "value": "failed", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "amount", "value": 40000, "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "error_source", "value": "gateway", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "error_step", "value": "payment_authorization", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "error_reason", "value": "payment_failed", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "attempt_number", "value": 1, "band": "DERIVED", "source": "internal_count"}
+      ]
+    },
+    "expectation": {"bucket_key": "error_reason:payment_failed", "expected_recovery_rate": 0.6, "sample_size": 1, "source": "rule_v1"},
+    "expected": {
+      "decision_type": {
+        "value": "RECOMMEND_RETRY_PROMPT",
+        "tier": "project_defined",
+        "reference": "razorpay_master_claude_code_handoff_v1.md §11/§12 (same grounding as gateway_failure_recoverable_calibrated)."
+      },
+      "confidence": {
+        "value": "equals_expected_recovery_rate",
+        "tier": "engineering_authored",
+        "reference": "Same git commit d10ac06 citation as gateway_failure_recoverable_calibrated."
+      }
+    }
+  },
+  {
+    "case_id": "gateway_failure_alternate_error_reason",
+    "description": "A gateway-side failure with an error_reason other than the commonly-seen 'payment_failed'. §11 speaks generally of 'payment failure', not any specific error_reason string. Neither rule_based.py commit message states that decision_type is unconditional on the specific error_reason value -- this remains this evaluation's own interpretation of §11's generality, not a reviewed decision, so it is tiered as an assumption rather than engineering_authored.",
+    "behavior_area": "gateway_failure_retry_recommendation",
+    "context": {
+      "order_id": "eval_order_e5",
+      "payment_attempt_id": "eval_pay_e5",
+      "fields": [
+        {"field": "status", "value": "failed", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "amount", "value": 40000, "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "error_source", "value": "gateway", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "error_step", "value": "payment_authorization", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "error_reason", "value": "processing_error", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "attempt_number", "value": 1, "band": "DERIVED", "source": "internal_count"}
+      ]
+    },
+    "expectation": {"bucket_key": "error_reason:processing_error", "expected_recovery_rate": 0.55, "sample_size": 10, "source": "rule_v1"},
+    "expected": {
+      "decision_type": {
+        "value": "RECOMMEND_RETRY_PROMPT",
+        "tier": "inference_assumption",
+        "reference": "Own reading of §11's generality, extended to an alternate gateway error_reason not specifically addressed by any project document or rule_based.py commit message (d10ac06, 34c6762)."
+      }
+    }
+  },
+  {
+    "case_id": "missing_attempt_number_not_assumed_at_ceiling",
+    "description": "A gateway failure where attempt_number is entirely absent from the context (not merely zero). No project document or rule_based.py commit message addresses a completely absent attempt_number; treating an unknown attempt count as not-yet-stopped rather than an automatic stop is this evaluation's own judgment call.",
+    "behavior_area": "retry_attempt_stopping_boundary",
+    "context": {
+      "order_id": "eval_order_f1",
+      "payment_attempt_id": "eval_pay_f1",
+      "fields": [
+        {"field": "status", "value": "failed", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "amount", "value": 20000, "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "error_source", "value": "gateway", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "error_step", "value": "payment_authorization", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "error_reason", "value": "payment_failed", "band": "RAW", "source": "razorpay_api_poll"}
+      ]
+    },
+    "expectation": {"bucket_key": "error_reason:payment_failed", "expected_recovery_rate": 0.65, "sample_size": 12, "source": "rule_v1"},
+    "expected": {
+      "decision_type": {
+        "value": "RECOMMEND_RETRY_PROMPT",
+        "tier": "inference_assumption",
+        "reference": "No project document or rule_based.py commit message addresses a completely absent attempt_number. Included as an honest, explicitly weak assumption."
+      }
+    }
+  },
+  {
+    "case_id": "gateway_failure_far_beyond_any_reasonable_stopping_point",
+    "description": "A gateway failure observed at an extremely high attempt_number (100) -- far beyond any plausible configured retry ceiling. Master handoff §6 (FUNDAMENTAL CONTROL BOUNDARY) states unconditionally: 'Every automated workflow needs explicit stopping rules.' Regardless of the exact configured ceiling value -- which commit d10ac06 itself calls a 'placeholder ceiling, not yet merchant-config-wired', so this evaluation does not claim to know its exact number -- a bounded automated workflow must have stopped recommending retries well before 100 attempts.",
+    "behavior_area": "retry_attempt_stopping_boundary",
+    "context": {
+      "order_id": "eval_order_f2",
+      "payment_attempt_id": "eval_pay_f2",
+      "fields": [
+        {"field": "status", "value": "failed", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "amount", "value": 20000, "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "error_source", "value": "gateway", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "error_step", "value": "payment_authorization", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "error_reason", "value": "payment_failed", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "attempt_number", "value": 100, "band": "DERIVED", "source": "internal_count"}
+      ]
+    },
+    "expectation": {"bucket_key": "error_reason:payment_failed", "expected_recovery_rate": 0.7, "sample_size": 15, "source": "rule_v1"},
+    "expected": {
+      "decision_type": {
+        "value": "NO_ACTION",
+        "tier": "project_defined",
+        "reference": "razorpay_master_claude_code_handoff_v1.md §6: 'Every automated workflow needs explicit stopping rules.' Applied without needing to know the exact configured ceiling value (which git commit d10ac06 itself documents as an undetermined placeholder)."
+      }
+    }
+  },
+  {
+    "case_id": "refunded_status_observed_directly",
+    "description": "A payment attempt observed with status='refunded' and no failure information. Ambiguous/unrecognized-condition case, explicitly flagged as an inference rather than a settled rule.",
+    "behavior_area": "fallback_unrecognized_state",
+    "context": {
+      "order_id": "eval_order_g1",
+      "payment_attempt_id": "eval_pay_g1",
+      "fields": [
+        {"field": "status", "value": "refunded", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "amount", "value": 50000, "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "attempt_number", "value": 1, "band": "DERIVED", "source": "internal_count"}
+      ]
+    },
+    "expectation": {"bucket_key": "no_error_reason", "expected_recovery_rate": 0.5, "sample_size": 0, "source": "rule_v1_default"},
+    "expected": {
+      "decision_type": {
+        "value": "NO_ACTION",
+        "tier": "inference_assumption",
+        "reference": "No project document or prior gate decision addresses a directly-observed 'refunded' status. A refund is itself already a resolved terminal state, so NO_ACTION is a defensible conservative default -- but this case is this evaluation's own judgment, not a specification."
+      }
+    }
+  },
+  {
+    "case_id": "unrecognized_error_source",
+    "description": "A payment failure with an error_source value that is neither 'gateway' nor 'customer'. No project document addresses this; the conservative NO_ACTION default is this evaluation's own judgment, included specifically to surface this gap rather than hide it.",
+    "behavior_area": "fallback_unrecognized_state",
+    "context": {
+      "order_id": "eval_order_g2",
+      "payment_attempt_id": "eval_pay_g2",
+      "fields": [
+        {"field": "status", "value": "failed", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "amount", "value": 20000, "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "error_source", "value": "unknown_processor", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "error_reason", "value": "internal_error", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "attempt_number", "value": 1, "band": "DERIVED", "source": "internal_count"}
+      ]
+    },
+    "expectation": {"bucket_key": "error_reason:internal_error", "expected_recovery_rate": 0.5, "sample_size": 0, "source": "rule_v1_default"},
+    "expected": {
+      "decision_type": {
+        "value": "NO_ACTION",
+        "tier": "inference_assumption",
+        "reference": "No project document or prior gate decision addresses an unrecognized error_source value."
+      }
+    }
+  },
+  {
+    "case_id": "documented_only_created_status",
+    "description": "A payment attempt with status='created', a value the project's own Phase 1 verification never independently observed. Included as a synthetic robustness case for an engine input that is documented but unverified in real data.",
+    "behavior_area": "fallback_unrecognized_state",
+    "context": {
+      "order_id": "eval_order_g3",
+      "payment_attempt_id": "eval_pay_g3",
+      "fields": [
+        {"field": "status", "value": "created", "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "amount", "value": 10000, "band": "RAW", "source": "razorpay_api_poll"},
+        {"field": "attempt_number", "value": 1, "band": "DERIVED", "source": "internal_count"}
+      ]
+    },
+    "expectation": {"bucket_key": "no_error_reason", "expected_recovery_rate": 0.5, "sample_size": 0, "source": "rule_v1_default"},
+    "expected": {
+      "decision_type": {
+        "value": "NO_ACTION",
+        "tier": "inference_assumption",
+        "reference": "domain/contracts.py: PaymentAttemptStatus.CREATED is marked 'DOCUMENTED only -- never independently observed' (Phase 1 verification). A data-provenance fact, not a citation of decision logic -- the expected NO_ACTION outcome itself is this evaluation's own synthetic-robustness judgment, not a specification."
+      }
+    }
+  }
+]
