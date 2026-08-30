@@ -27,6 +27,20 @@ rather than relying on convention/code review alone:
    src/verification/, src/reconciliation/, or src/observability/ may
    import it -- an evaluation harness must never become a dependency of
    any production runtime path.
+8. src/feedback/* may write ONLY expectation_baselines (via the
+   existing, unmodified intelligence.calibration.upsert_calibrated_baseline()
+   / repository.expectation_baselines.upsert_baseline()) -- it must
+   contain no other mutating SQL and must never call a mutation
+   repository function for any other table (actions, decisions,
+   merchants, orders, payment_attempts, canonical_events,
+   audit_entries). It must never import the Razorpay write client or
+   the execution/verification write paths, and must never import
+   observability or evaluation.
+9. src/feedback/* is strictly downstream, symmetrically with
+   observability/ and evaluation/: nothing under src/context/,
+   src/intelligence/, src/policy/, src/action/, src/verification/,
+   src/reconciliation/, src/observability/, or src/evaluation/ may
+   import it.
 
 Pure Python, no DB required.
 """
@@ -73,11 +87,12 @@ def test_only_verification_module_references_verified_status_literals():
     # imports for typing -- defining the type is not the same as a
     # module SETTING that status on an action. observability/ is
     # excluded for the same reason this test itself states: it is about
-    # who WRITES the status, not who can name it -- observability/ only
-    # ever reads and counts already-persisted status values (mechanically
-    # enforced by test_observability_module_contains_no_mutation_operations
-    # below), it never sets one.
-    excluded_packages = {"verification", "domain", "observability"}
+    # who WRITES the status, not who can name it -- observability/ and
+    # feedback/ only ever read already-persisted status values
+    # (mechanically enforced by test_observability_module_contains_no_mutation_operations
+    # and test_feedback_module_writes_only_expectation_baselines below),
+    # neither ever sets one.
+    excluded_packages = {"verification", "domain", "observability", "feedback"}
     offenders = []
     for path in _all_py_files(SRC_ROOT):
         if _top_level_package(path) in excluded_packages:
@@ -209,4 +224,83 @@ def test_production_runtime_never_imports_evaluation():
     assert offenders == [], (
         f"evaluation/ is strictly downstream and must never be imported by production "
         f"runtime code: {offenders}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# feedback/ may write ONLY expectation_baselines, and is strictly downstream
+# ---------------------------------------------------------------------------
+
+# The one write path this module is allowed to use -- everything else that
+# looks like a mutation is forbidden.
+_ALLOWED_FEEDBACK_MUTATION_CALLS = ("upsert_calibrated_baseline", "upsert_baseline")
+
+# Mutation repository functions targeting any table OTHER than
+# expectation_baselines. Referencing any of these from feedback/ would mean
+# it's no longer confined to its one allowed write path.
+_FORBIDDEN_FEEDBACK_MUTATION_FUNCTIONS = (
+    "insert_decision", "insert_action", "insert_audit_entry", "insert_merchant",
+    "insert_canonical_event", "insert_payment_attempt", "upsert_order",
+    "update_action_status", "update_payment_attempt_status", "claim_action_for_execution",
+)
+
+
+def test_feedback_module_never_imports_razorpay_write_client_or_execution_paths():
+    forbidden_substrings = ("razorpay_write_client", "action.orchestrator", "verification.verifier")
+    offenders = []
+    for path in _all_py_files(SRC_ROOT / "feedback"):
+        text = path.read_text(encoding="utf-8")
+        for forbidden in forbidden_substrings:
+            if forbidden in text:
+                offenders.append(f"{path.relative_to(SRC_ROOT)}: {forbidden}")
+    assert offenders == [], f"src/feedback/ must not import execution/verification write paths: {offenders}"
+
+
+def test_feedback_module_never_imports_observability_or_evaluation():
+    offenders = []
+    for path in _all_py_files(SRC_ROOT / "feedback"):
+        text = path.read_text(encoding="utf-8")
+        if "observability" in text or "evaluation" in text:
+            offenders.append(str(path.relative_to(SRC_ROOT)))
+    assert offenders == [], f"src/feedback/ must not depend on observability/ or evaluation/: {offenders}"
+
+
+def test_feedback_module_writes_only_expectation_baselines():
+    offenders = []
+    for path in _all_py_files(SRC_ROOT / "feedback"):
+        text = path.read_text(encoding="utf-8")
+        if _MUTATION_SQL_PATTERN.search(text):
+            offenders.append(f"{path.relative_to(SRC_ROOT)}: mutation SQL keyword directly present")
+        for fn in _FORBIDDEN_FEEDBACK_MUTATION_FUNCTIONS:
+            if fn in text:
+                offenders.append(f"{path.relative_to(SRC_ROOT)}: {fn}")
+    assert offenders == [], f"src/feedback/ may write only expectation_baselines: {offenders}"
+
+
+def test_feedback_module_uses_the_allowed_calibration_write_path():
+    # Positive check, complementing the negative one above: feedback/
+    # must actually route its one permitted write through the existing
+    # validated wrapper, not bypass it with a hand-rolled upsert.
+    text = (SRC_ROOT / "feedback" / "calibration.py").read_text(encoding="utf-8")
+    assert any(call in text for call in _ALLOWED_FEEDBACK_MUTATION_CALLS), (
+        "src/feedback/calibration.py must write expectation_baselines through "
+        "upsert_calibrated_baseline()/upsert_baseline(), not a bespoke write"
+    )
+
+
+def test_production_runtime_and_other_downstream_modules_never_import_feedback():
+    forbidden_markers = ("from feedback", "import feedback", "feedback.calibration")
+    offenders = []
+    for package in (
+        "context", "intelligence", "policy", "action", "verification",
+        "reconciliation", "observability", "evaluation",
+    ):
+        for path in _all_py_files(SRC_ROOT / package):
+            text = path.read_text(encoding="utf-8")
+            for marker in forbidden_markers:
+                if marker in text:
+                    offenders.append(f"{path.relative_to(SRC_ROOT)}: {marker}")
+    assert offenders == [], (
+        f"feedback/ is strictly downstream and must never be imported by production "
+        f"runtime code or the other downstream modules: {offenders}"
     )
