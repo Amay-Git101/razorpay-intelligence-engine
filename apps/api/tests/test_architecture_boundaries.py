@@ -41,6 +41,20 @@ rather than relying on convention/code review alone:
    src/intelligence/, src/policy/, src/action/, src/verification/,
    src/reconciliation/, src/observability/, or src/evaluation/ may
    import it.
+10. src/manual_run/* is tooling, not a new orchestration layer: it must
+    never import the Razorpay write client, never call capture_payment(),
+    never call any mutation repository function for orders,
+    payment_attempts, canonical_events, decisions, or actions, and must
+    contain no SQL of its own -- it may only call the existing
+    orchestration functions (reconcile_order, make_decision,
+    propose_action, verify_action, recompute_baselines) and the specific
+    read-only repository lookups needed to validate a merchant and
+    resolve reconciliation-returned event ids (get_merchant,
+    list_events_for_order, get_decision).
+11. src/manual_run/* is strictly downstream: nothing under src/context/,
+    src/intelligence/, src/policy/, src/action/, src/verification/,
+    src/reconciliation/, src/observability/, src/evaluation/, or
+    src/feedback/ may import it.
 
 Pure Python, no DB required.
 """
@@ -303,4 +317,139 @@ def test_production_runtime_and_other_downstream_modules_never_import_feedback()
     assert offenders == [], (
         f"feedback/ is strictly downstream and must never be imported by production "
         f"runtime code or the other downstream modules: {offenders}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# manual_run/ is tooling, not a new orchestration layer
+# ---------------------------------------------------------------------------
+
+# The exact orchestration functions manual_run/ is allowed to call --
+# nothing else that changes state.
+_ALLOWED_MANUAL_RUN_ORCHESTRATION_CALLS = (
+    "reconcile_order", "make_decision", "propose_action", "verify_action", "recompute_baselines",
+)
+
+# The exact read-only repository lookups manual_run/ is allowed to call.
+_ALLOWED_MANUAL_RUN_REPOSITORY_READS = {
+    "merchants": {"get_merchant"},
+    "canonical_events": {"list_events_for_order"},
+    "decisions": {"get_decision"},
+}
+
+# A real capture call always looks like `<something>.capture_payment(`.
+# Checking for the dotted call form (rather than the bare word) avoids
+# flagging this test file's own or manual_run's own prose describing why
+# it never does this.
+_CAPTURE_PAYMENT_CALL_PATTERN = re.compile(r"\.capture_payment\s*\(")
+
+_IMPORT_FROM_REPOSITORY_PATTERN = re.compile(r"from repository\.(\w+) import ([\w, ]+)")
+
+
+def test_manual_run_never_imports_razorpay_write_client_or_calls_capture_payment():
+    offenders = []
+    for path in _all_py_files(SRC_ROOT / "manual_run"):
+        text = path.read_text(encoding="utf-8")
+        if "razorpay_write_client" in text:
+            offenders.append(f"{path.relative_to(SRC_ROOT)}: razorpay_write_client")
+        if _CAPTURE_PAYMENT_CALL_PATTERN.search(text):
+            offenders.append(f"{path.relative_to(SRC_ROOT)}: direct capture_payment() call")
+    assert offenders == [], f"src/manual_run/ must not touch the Razorpay write path directly: {offenders}"
+
+
+def test_manual_run_never_calls_mutation_repository_functions():
+    offenders = []
+    for path in _all_py_files(SRC_ROOT / "manual_run"):
+        text = path.read_text(encoding="utf-8")
+        for fn in _FORBIDDEN_FEEDBACK_MUTATION_FUNCTIONS:
+            if fn in text:
+                offenders.append(f"{path.relative_to(SRC_ROOT)}: {fn}")
+    assert offenders == [], f"src/manual_run/ must not mutate orders/payment_attempts/canonical_events/decisions/actions: {offenders}"
+
+
+def test_manual_run_repository_imports_are_limited_to_the_allowed_read_lookups():
+    offenders = []
+    for path in _all_py_files(SRC_ROOT / "manual_run"):
+        text = path.read_text(encoding="utf-8")
+        for module_name, imported_names in _IMPORT_FROM_REPOSITORY_PATTERN.findall(text):
+            allowed = _ALLOWED_MANUAL_RUN_REPOSITORY_READS.get(module_name, set())
+            for name in (n.strip() for n in imported_names.split(",")):
+                if name not in allowed:
+                    offenders.append(f"{path.relative_to(SRC_ROOT)}: repository.{module_name}.{name}")
+    assert offenders == [], (
+        f"src/manual_run/ may only import the specific read-only repository lookups needed "
+        f"for merchant/event resolution: {offenders}"
+    )
+
+
+def test_manual_run_contains_no_sql_of_its_own():
+    offenders = []
+    for path in _all_py_files(SRC_ROOT / "manual_run"):
+        text = path.read_text(encoding="utf-8")
+        if "cursor(" in text or ".execute(" in text:
+            offenders.append(f"{path.relative_to(SRC_ROOT)}: direct cursor/execute usage")
+        if _MUTATION_SQL_PATTERN.search(text):
+            offenders.append(f"{path.relative_to(SRC_ROOT)}: mutation SQL keyword")
+    assert offenders == [], f"src/manual_run/ must contain no SQL of its own -- only calls to already-tested functions: {offenders}"
+
+
+def test_manual_run_uses_only_the_allowed_orchestration_functions():
+    # Positive check: confirms the runner actually calls the pipeline
+    # through the intended functions, not a private reimplementation.
+    text = (SRC_ROOT / "manual_run" / "run_reconciliation.py").read_text(encoding="utf-8")
+    missing = [fn for fn in _ALLOWED_MANUAL_RUN_ORCHESTRATION_CALLS if fn not in text]
+    assert missing == [], f"src/manual_run/run_reconciliation.py should call every stage of the pipeline: missing {missing}"
+
+
+def test_manual_run_never_prints_credential_like_values():
+    # A structural, line-level heuristic: no `print(` statement may also
+    # reference a credential-bearing name on the same line. This does not
+    # prove no secret is ever printed (a heuristic can't), but it catches
+    # the obvious mistake of interpolating a credential variable into a
+    # user-facing print() call.
+    forbidden_on_a_print_line = ("key_secret", "KEY_SECRET", "database_url", "DATABASE_URL", "os.environ")
+    offenders = []
+    for path in _all_py_files(SRC_ROOT / "manual_run"):
+        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            if "print(" not in line:
+                continue
+            for forbidden in forbidden_on_a_print_line:
+                if forbidden in line:
+                    offenders.append(f"{path.relative_to(SRC_ROOT)}:{line_number}: print() references {forbidden}")
+    assert offenders == [], f"src/manual_run/ must never print a credential-bearing value: {offenders}"
+
+
+def test_manual_run_does_not_duplicate_decision_or_policy_business_rules():
+    # manual_run/ should only ever branch on the coarse decision_type /
+    # action status strings it prints -- never on the underlying
+    # rule/policy literals those modules alone own.
+    forbidden_business_rule_literals = (
+        "AUTHORIZED_PAYMENT_ELIGIBLE_FOR_CAPTURE", "GATEWAY_SIDE_FAILURE", "CUSTOMER_CANCELLED",
+        "MAX_ATTEMPTS_REACHED", "max_auto_capture_amount", "approval_band_upper",
+        "AMOUNT_EXCEEDS_HARD_LIMIT", "WITHIN_APPROVAL_BAND",
+    )
+    offenders = []
+    for path in _all_py_files(SRC_ROOT / "manual_run"):
+        text = path.read_text(encoding="utf-8")
+        for literal in forbidden_business_rule_literals:
+            if literal in text:
+                offenders.append(f"{path.relative_to(SRC_ROOT)}: {literal}")
+    assert offenders == [], f"src/manual_run/ must not duplicate RuleBasedEngine/Policy's own business-rule literals: {offenders}"
+
+
+def test_production_and_downstream_modules_never_import_manual_run():
+    forbidden_markers = ("from manual_run", "import manual_run", "manual_run.run_reconciliation")
+    offenders = []
+    for package in (
+        "context", "intelligence", "policy", "action", "verification",
+        "reconciliation", "observability", "evaluation", "feedback",
+    ):
+        for path in _all_py_files(SRC_ROOT / package):
+            text = path.read_text(encoding="utf-8")
+            for marker in forbidden_markers:
+                if marker in text:
+                    offenders.append(f"{path.relative_to(SRC_ROOT)}: {marker}")
+    assert offenders == [], (
+        f"manual_run/ is tooling, not a dependency of the pipeline -- nothing under the "
+        f"production or other downstream packages may import it: {offenders}"
     )
