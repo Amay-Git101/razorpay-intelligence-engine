@@ -29,3 +29,9 @@ def get_merchant(conn: psycopg.Connection, merchant_id: UUID) -> dict[str, Any] 
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute("select * from merchants where id = %s", (merchant_id,))
         return cur.fetchone()
+
+
+def list_merchants(conn: psycopg.Connection, limit: int = 50) -> list[dict[str, Any]]:
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute("select * from merchants order by created_at desc limit %s", (limit,))
+        return cur.fetchall()

@@ -4,34 +4,20 @@ triggered by a human on the command line.
 
     python -m manual_run.run_reconciliation --merchant-id <id> --order-id <id> [--recalibrate]
 
-ARCHITECTURAL INTENT: this module is tooling, not a new orchestration
-layer. It contains no decision/policy/action/verification/calibration
-logic of its own -- it only calls the same already-tested functions
-every existing test already calls, in the same order Scenario A/B
-already prove correct, and prints their results. A future FastAPI
-endpoint, webhook handler, or scheduled worker must be able to call
-`reconciliation.service.reconcile_order`, `intelligence.orchestration.
-make_decision`, `action.orchestrator.propose_action`,
-`verification.verifier.verify_action`, and
-`feedback.calibration.recompute_baselines` directly, without ever
-depending on this module. This module depends on the pipeline; the
-pipeline must never depend on this module.
-
-EVENT PROCESSING RULE: reconcile_order() returns exactly the newly
-created canonical_events ids for this call. Only those ids are ever
-fed into make_decision() -- the order's full historical event list is
-never reprocessed. This is required for repeat-run safety:
-make_decision() itself does not deduplicate (a changed mind is a new
-Decision row, by design), so safety against duplicate decisions on a
-second manual run comes entirely from only ever acting on genuinely
-new event ids, never from re-walking history.
+ARCHITECTURAL INTENT: this module is a thin CLI presentation layer over
+pipeline.orchestration.run_reconciliation_pipeline() -- the actual
+reconcile -> decide -> policy -> action -> verify sequencing lives
+there now, shared with the HTTP API, so neither this CLI nor the API
+depends on the other. This module's only remaining job is argument
+parsing, merchant validation, credential setup, the --recalibrate step,
+and turning a PipelineRunResult into human-readable lines.
 
 WRITE BOUNDARY: this module never imports or constructs
 RazorpayWriteClient and never calls capture_payment() directly.
-propose_action(..., write_client=None) is the sole path that may
-construct a write client, exactly as it already does for every
-existing test and Scenario A/B -- this module relies entirely on the
-existing Policy -> Action authorization boundary and adds no bypass.
+propose_action(..., write_client=None), called inside
+pipeline.orchestration, remains the sole path that may construct a
+write client -- this module relies entirely on the existing
+Policy -> Action authorization boundary and adds no bypass.
 
 CALIBRATION: feedback.calibration.recompute_baselines() is never
 called unless --recalibrate is passed, and even then only after every
@@ -51,12 +37,10 @@ python -m precedent):
         failure, an unresolved reconciliation-returned event id, or (only
         when --recalibrate was explicitly passed) a calibration failure.
 
-OUTPUT: one concise line per stage/event (see the module's print calls
-below for the exact vocabulary). Never prints credentials, DATABASE_URL,
-raw request/response bodies, full exception objects, or an internal
-object's repr() -- only status strings and counts that are already safe
-to display (the same fields observability/evaluation already treat as
-safe to serialize).
+OUTPUT: one concise line per stage/event. Never prints credentials,
+DATABASE_URL, raw request/response bodies, full exception objects, or
+an internal object's repr() -- only status strings and counts that are
+already safe to display.
 """
 
 from __future__ import annotations
@@ -67,24 +51,15 @@ from typing import Any
 
 import psycopg
 
-from action.orchestrator import propose_action
 from db.connection import get_connection
 from feedback.calibration import recompute_baselines
-from intelligence.orchestration import make_decision
-from policy.orchestration import NotPolicyGated
+from pipeline.orchestration import PipelineRunResult, UnresolvedEventError, run_reconciliation_pipeline
 from razorpay_client.client import RazorpayReadClient
 from razorpay_client.errors import RazorpayAPIError
-from reconciliation.service import reconcile_order
-from repository.canonical_events import list_events_for_order
-from repository.decisions import get_decision
 from repository.merchants import get_merchant
-from verification.verifier import verify_action
 
 EXIT_OK = 0
 EXIT_OPERATIONAL_ERROR = 1
-
-_NO_ACTION_DECISION_TYPE = "NO_ACTION"
-_VERIFYING_ACTION_STATUS = "VERIFYING"
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -104,30 +79,23 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _process_event(conn: psycopg.Connection, merchant_id: str, event: dict[str, Any], read_client: Any) -> None:
-    print(f"event: {event['id']} {event['event_type']}")
-
-    decision_id = make_decision(conn, merchant_id, event)
-    decision = get_decision(conn, decision_id)
-    print(f"decision: {decision['decision_type']}")
-
-    if decision["decision_type"] == _NO_ACTION_DECISION_TYPE:
-        print("action: not proposed (NO_ACTION)")
+def _print_pipeline_result(result: PipelineRunResult) -> None:
+    print(f"reconciliation: {result.new_event_count} new event(s)")
+    if not result.events:
+        print("run: nothing new to process")
         return
 
-    try:
-        action = propose_action(conn, decision_id, write_client=None)
-    except NotPolicyGated:
-        print("action: not proposed (decision_type is not policy-gated)")
-        return
-
-    print(f"action: {action['status']}")
-
-    if action["status"] == _VERIFYING_ACTION_STATUS:
-        final_action = verify_action(conn, action["id"], read_client=read_client)
-        print(f"verification: {final_action['status']}")
-    else:
-        print("verification: skipped (action did not reach VERIFYING)")
+    for event in result.events:
+        print(f"event: {event.event_id} {event.event_type}")
+        print(f"decision: {event.decision_type}")
+        if event.action_skipped_reason is not None:
+            print(f"action: not proposed ({event.action_skipped_reason})")
+            continue
+        print(f"action: {event.action_status}")
+        if event.verification_status is not None:
+            print(f"verification: {event.verification_status}")
+        else:
+            print("verification: skipped (action did not reach VERIFYING)")
 
 
 def run(conn: psycopg.Connection, read_client: Any, merchant_id: str, order_id: str, recalibrate: bool) -> int:
@@ -138,24 +106,15 @@ def run(conn: psycopg.Connection, read_client: Any, merchant_id: str, order_id: 
     print(f"merchant: {merchant_id} validated")
 
     try:
-        new_event_ids = reconcile_order(conn, read_client, merchant_id, order_id)
+        result = run_reconciliation_pipeline(conn, read_client, merchant_id, order_id)
     except RazorpayAPIError:
         print("error: Razorpay read failed for this order")
         return EXIT_OPERATIONAL_ERROR
+    except UnresolvedEventError:
+        print("error: reconciliation returned an event that could not be resolved -- stopping")
+        return EXIT_OPERATIONAL_ERROR
 
-    print(f"reconciliation: {len(new_event_ids)} new event(s)")
-
-    if new_event_ids:
-        events_by_id = {str(e["id"]): e for e in list_events_for_order(conn, order_id)}
-        for event_id in new_event_ids:
-            event = events_by_id.get(str(event_id))
-            if event is None:
-                print(f"error: reconciliation returned event {event_id}, which could not be resolved -- stopping")
-                return EXIT_OPERATIONAL_ERROR
-            _process_event(conn, merchant_id, event, read_client)
-            conn.commit()  # durably persist this event's full outcome before moving on
-    else:
-        print("run: nothing new to process")
+    _print_pipeline_result(result)
 
     if recalibrate:
         try:

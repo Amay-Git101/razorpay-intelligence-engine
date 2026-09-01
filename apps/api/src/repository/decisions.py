@@ -51,3 +51,13 @@ def get_decision(conn: psycopg.Connection, decision_id: UUID) -> dict[str, Any] 
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute("select * from decisions where id = %s", (decision_id,))
         return cur.fetchone()
+
+
+def list_decisions_for_order(conn: psycopg.Connection, order_id: str) -> list[dict[str, Any]]:
+    """Every Decision ever made for this order, oldest first. More than
+    one row is expected and normal -- Decisions are immutable and a
+    changed mind produces a new row, never an edit (see insert_decision's
+    own comment)."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute("select * from decisions where order_id = %s order by created_at asc", (order_id,))
+        return cur.fetchall()

@@ -45,16 +45,40 @@ rather than relying on convention/code review alone:
     never import the Razorpay write client, never call capture_payment(),
     never call any mutation repository function for orders,
     payment_attempts, canonical_events, decisions, or actions, and must
-    contain no SQL of its own -- it may only call the existing
-    orchestration functions (reconcile_order, make_decision,
-    propose_action, verify_action, recompute_baselines) and the specific
-    read-only repository lookups needed to validate a merchant and
-    resolve reconciliation-returned event ids (get_merchant,
-    list_events_for_order, get_decision).
+    contain no SQL of its own -- it may only call
+    pipeline.orchestration.run_reconciliation_pipeline() (the shared
+    reconcile/decide/propose/verify sequence, also used by the API),
+    feedback.calibration.recompute_baselines(), and the one read-only
+    repository lookup needed to validate a merchant (get_merchant).
 11. src/manual_run/* is strictly downstream: nothing under src/context/,
     src/intelligence/, src/policy/, src/action/, src/verification/,
-    src/reconciliation/, src/observability/, src/evaluation/, or
-    src/feedback/ may import it.
+    src/reconciliation/, src/observability/, src/evaluation/,
+    src/feedback/, src/pipeline/, or src/api/ may import it.
+12. src/pipeline/* contains the one shared reconcile/decide/propose/
+    verify sequence -- it must never import the Razorpay write client,
+    never call capture_payment(), never call a mutation repository
+    function, and must contain no SQL of its own; it may call only
+    reconcile_order, make_decision, propose_action, verify_action, and
+    the one read-only lookup (list_events_for_order) needed to resolve
+    reconciliation-returned event ids.
+13. src/pipeline/* is strictly downstream, symmetrically with the other
+    downstream modules: nothing under src/context/, src/intelligence/,
+    src/policy/, src/action/, src/verification/, src/reconciliation/,
+    src/observability/, src/evaluation/, or src/feedback/ may import
+    it. src/manual_run/ and src/api/ MAY import it (that dependency
+    direction is the whole point).
+14. src/api/* is a leaf delivery layer: it must never import the
+    Razorpay write client, never call capture_payment(), never call a
+    mutation repository function for any table, never import
+    manual_run (API and manual_run are siblings depending on
+    pipeline.orchestration, neither depends on the other), and must
+    contain no SQL of its own -- it may call only existing repository
+    read functions, existing observability read functions, and
+    pipeline.orchestration.run_reconciliation_pipeline().
+15. src/api/* is strictly downstream: nothing under src/context/,
+    src/intelligence/, src/policy/, src/action/, src/verification/,
+    src/reconciliation/, src/observability/, src/evaluation/,
+    src/feedback/, src/pipeline/, or src/manual_run/ may import it.
 
 Pure Python, no DB required.
 """
@@ -325,16 +349,17 @@ def test_production_runtime_and_other_downstream_modules_never_import_feedback()
 # ---------------------------------------------------------------------------
 
 # The exact orchestration functions manual_run/ is allowed to call --
-# nothing else that changes state.
+# nothing else that changes state. The reconcile/decide/propose/verify
+# sequence itself now lives in pipeline.orchestration.run_reconciliation_pipeline
+# (shared with the API), so manual_run only needs to invoke that one
+# entry point plus the opt-in calibration step.
 _ALLOWED_MANUAL_RUN_ORCHESTRATION_CALLS = (
-    "reconcile_order", "make_decision", "propose_action", "verify_action", "recompute_baselines",
+    "run_reconciliation_pipeline", "recompute_baselines",
 )
 
 # The exact read-only repository lookups manual_run/ is allowed to call.
 _ALLOWED_MANUAL_RUN_REPOSITORY_READS = {
     "merchants": {"get_merchant"},
-    "canonical_events": {"list_events_for_order"},
-    "decisions": {"get_decision"},
 }
 
 # A real capture call always looks like `<something>.capture_payment(`.
@@ -452,4 +477,211 @@ def test_production_and_downstream_modules_never_import_manual_run():
     assert offenders == [], (
         f"manual_run/ is tooling, not a dependency of the pipeline -- nothing under the "
         f"production or other downstream packages may import it: {offenders}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# pipeline/ is the one shared reconcile/decide/propose/verify sequence --
+# manual_run and api both depend on it, it depends on neither of them.
+# ---------------------------------------------------------------------------
+
+_ALLOWED_PIPELINE_ORCHESTRATION_CALLS = ("reconcile_order", "make_decision", "propose_action", "verify_action")
+
+_ALLOWED_PIPELINE_REPOSITORY_READS = {
+    "canonical_events": {"list_events_for_order"},
+    "decisions": {"get_decision"},
+}
+
+
+def test_pipeline_module_never_imports_razorpay_write_client_or_calls_capture_payment():
+    offenders = []
+    for path in _all_py_files(SRC_ROOT / "pipeline"):
+        text = path.read_text(encoding="utf-8")
+        if "razorpay_write_client" in text:
+            offenders.append(f"{path.relative_to(SRC_ROOT)}: razorpay_write_client")
+        if _CAPTURE_PAYMENT_CALL_PATTERN.search(text):
+            offenders.append(f"{path.relative_to(SRC_ROOT)}: direct capture_payment() call")
+    assert offenders == [], f"src/pipeline/ must not touch the Razorpay write path directly: {offenders}"
+
+
+def test_pipeline_module_never_calls_mutation_repository_functions_beyond_the_pipeline_itself():
+    # The pipeline legitimately calls make_decision/propose_action/
+    # verify_action, which themselves write via insert_decision/
+    # insert_action/update_action_status/etc -- this test is about
+    # pipeline/ never calling those mutation repository functions
+    # DIRECTLY, bypassing the orchestration functions that own them.
+    offenders = []
+    for path in _all_py_files(SRC_ROOT / "pipeline"):
+        text = path.read_text(encoding="utf-8")
+        for fn in _FORBIDDEN_FEEDBACK_MUTATION_FUNCTIONS:
+            if fn in text:
+                offenders.append(f"{path.relative_to(SRC_ROOT)}: {fn}")
+    assert offenders == [], f"src/pipeline/ must not call mutation repository functions directly: {offenders}"
+
+
+def test_pipeline_module_repository_imports_are_limited_to_event_resolution():
+    offenders = []
+    for path in _all_py_files(SRC_ROOT / "pipeline"):
+        text = path.read_text(encoding="utf-8")
+        for module_name, imported_names in _IMPORT_FROM_REPOSITORY_PATTERN.findall(text):
+            allowed = _ALLOWED_PIPELINE_REPOSITORY_READS.get(module_name, set())
+            for name in (n.strip() for n in imported_names.split(",")):
+                if name not in allowed:
+                    offenders.append(f"{path.relative_to(SRC_ROOT)}: repository.{module_name}.{name}")
+    assert offenders == [], f"src/pipeline/ may only resolve reconciliation-returned events: {offenders}"
+
+
+def test_pipeline_module_contains_no_sql_of_its_own():
+    offenders = []
+    for path in _all_py_files(SRC_ROOT / "pipeline"):
+        text = path.read_text(encoding="utf-8")
+        if "cursor(" in text or ".execute(" in text:
+            offenders.append(f"{path.relative_to(SRC_ROOT)}: direct cursor/execute usage")
+        if _MUTATION_SQL_PATTERN.search(text):
+            offenders.append(f"{path.relative_to(SRC_ROOT)}: mutation SQL keyword")
+    assert offenders == [], f"src/pipeline/ must contain no SQL of its own: {offenders}"
+
+
+def test_pipeline_module_uses_the_real_pipeline_functions():
+    text = (SRC_ROOT / "pipeline" / "orchestration.py").read_text(encoding="utf-8")
+    missing = [fn for fn in _ALLOWED_PIPELINE_ORCHESTRATION_CALLS if fn not in text]
+    assert missing == [], f"src/pipeline/orchestration.py should call every stage of the pipeline: missing {missing}"
+
+
+def test_production_modules_never_import_pipeline():
+    forbidden_markers = ("from pipeline", "import pipeline", "pipeline.orchestration")
+    offenders = []
+    for package in (
+        "context", "intelligence", "policy", "action", "verification",
+        "reconciliation", "observability", "evaluation", "feedback",
+    ):
+        for path in _all_py_files(SRC_ROOT / package):
+            text = path.read_text(encoding="utf-8")
+            for marker in forbidden_markers:
+                if marker in text:
+                    offenders.append(f"{path.relative_to(SRC_ROOT)}: {marker}")
+    assert offenders == [], (
+        f"pipeline/ depends on the production modules, never the reverse: {offenders}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# api/ is a leaf delivery layer
+# ---------------------------------------------------------------------------
+
+_ALLOWED_API_REPOSITORY_READS = {
+    "merchants": {"get_merchant", "list_merchants"},
+    "orders": {"get_order", "list_orders_for_merchant"},
+    "payment_attempts": {"list_payment_attempts_for_order"},
+    "decisions": {"list_decisions_for_order"},
+    "actions": {"get_action_for_decision"},
+    "audit": {"list_audit_trail"},
+}
+
+
+def test_api_module_never_imports_razorpay_write_client_or_calls_capture_payment():
+    offenders = []
+    for path in _all_py_files(SRC_ROOT / "api"):
+        text = path.read_text(encoding="utf-8")
+        if "razorpay_write_client" in text:
+            offenders.append(f"{path.relative_to(SRC_ROOT)}: razorpay_write_client")
+        if _CAPTURE_PAYMENT_CALL_PATTERN.search(text):
+            offenders.append(f"{path.relative_to(SRC_ROOT)}: direct capture_payment() call")
+    assert offenders == [], f"src/api/ must not touch the Razorpay write path directly: {offenders}"
+
+
+def test_api_module_never_calls_mutation_repository_functions():
+    offenders = []
+    for path in _all_py_files(SRC_ROOT / "api"):
+        text = path.read_text(encoding="utf-8")
+        for fn in _FORBIDDEN_FEEDBACK_MUTATION_FUNCTIONS:
+            if fn in text:
+                offenders.append(f"{path.relative_to(SRC_ROOT)}: {fn}")
+    assert offenders == [], f"src/api/ must not mutate production tables: {offenders}"
+
+
+def test_api_module_repository_imports_are_limited_to_the_allowed_read_lookups():
+    offenders = []
+    for path in _all_py_files(SRC_ROOT / "api"):
+        text = path.read_text(encoding="utf-8")
+        for module_name, imported_names in _IMPORT_FROM_REPOSITORY_PATTERN.findall(text):
+            allowed = _ALLOWED_API_REPOSITORY_READS.get(module_name, set())
+            for name in (n.strip() for n in imported_names.split(",")):
+                if name not in allowed:
+                    offenders.append(f"{path.relative_to(SRC_ROOT)}: repository.{module_name}.{name}")
+    assert offenders == [], f"src/api/ may only import the specific read-only repository lookups it needs: {offenders}"
+
+
+def test_api_module_contains_no_sql_of_its_own():
+    offenders = []
+    for path in _all_py_files(SRC_ROOT / "api"):
+        text = path.read_text(encoding="utf-8")
+        if "cursor(" in text or ".execute(" in text:
+            offenders.append(f"{path.relative_to(SRC_ROOT)}: direct cursor/execute usage")
+        if _MUTATION_SQL_PATTERN.search(text):
+            offenders.append(f"{path.relative_to(SRC_ROOT)}: mutation SQL keyword")
+    assert offenders == [], f"src/api/ must contain no SQL of its own: {offenders}"
+
+
+def test_api_module_never_imports_manual_run():
+    offenders = []
+    for path in _all_py_files(SRC_ROOT / "api"):
+        text = path.read_text(encoding="utf-8")
+        if "manual_run" in text:
+            offenders.append(str(path.relative_to(SRC_ROOT)))
+    assert offenders == [], (
+        f"src/api/ must depend on pipeline.orchestration directly, never on manual_run/: {offenders}"
+    )
+
+
+def test_api_module_uses_the_shared_pipeline_function_for_reconciliation():
+    text = (SRC_ROOT / "api" / "app.py").read_text(encoding="utf-8")
+    assert "run_reconciliation_pipeline" in text, (
+        "src/api/app.py's reconcile endpoint must call the shared "
+        "pipeline.orchestration.run_reconciliation_pipeline(), not reimplement it"
+    )
+
+
+def test_api_module_never_prints_credential_like_values():
+    forbidden_on_a_print_line = ("key_secret", "KEY_SECRET", "database_url", "DATABASE_URL", "os.environ")
+    offenders = []
+    for path in _all_py_files(SRC_ROOT / "api"):
+        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            if "print(" not in line:
+                continue
+            for forbidden in forbidden_on_a_print_line:
+                if forbidden in line:
+                    offenders.append(f"{path.relative_to(SRC_ROOT)}:{line_number}: print() references {forbidden}")
+    assert offenders == [], f"src/api/ must never print a credential-bearing value: {offenders}"
+
+
+def test_api_module_does_not_duplicate_decision_or_policy_business_rules():
+    forbidden_business_rule_literals = (
+        "AUTHORIZED_PAYMENT_ELIGIBLE_FOR_CAPTURE", "GATEWAY_SIDE_FAILURE", "CUSTOMER_CANCELLED",
+        "MAX_ATTEMPTS_REACHED", "max_auto_capture_amount", "approval_band_upper",
+        "AMOUNT_EXCEEDS_HARD_LIMIT", "WITHIN_APPROVAL_BAND",
+    )
+    offenders = []
+    for path in _all_py_files(SRC_ROOT / "api"):
+        text = path.read_text(encoding="utf-8")
+        for literal in forbidden_business_rule_literals:
+            if literal in text:
+                offenders.append(f"{path.relative_to(SRC_ROOT)}: {literal}")
+    assert offenders == [], f"src/api/ must not duplicate RuleBasedEngine/Policy's own business-rule literals: {offenders}"
+
+
+def test_production_modules_never_import_api():
+    forbidden_markers = ("from api", "import api", "api.app", "api.schemas")
+    offenders = []
+    for package in (
+        "context", "intelligence", "policy", "action", "verification",
+        "reconciliation", "observability", "evaluation", "feedback", "pipeline", "manual_run",
+    ):
+        for path in _all_py_files(SRC_ROOT / package):
+            text = path.read_text(encoding="utf-8")
+            for marker in forbidden_markers:
+                if marker in text:
+                    offenders.append(f"{path.relative_to(SRC_ROOT)}: {marker}")
+    assert offenders == [], (
+        f"api/ is a leaf delivery layer -- no existing backend module may import it: {offenders}"
     )

@@ -143,3 +143,17 @@ def get_action_by_idempotency_key(conn: psycopg.Connection, idempotency_key: str
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute("select * from actions where idempotency_key = %s", (idempotency_key,))
         return cur.fetchone()
+
+
+def get_action_for_decision(conn: psycopg.Connection, decision_id: UUID | str) -> dict[str, Any] | None:
+    """The action row actually INSERTed for this specific decision_id, if
+    any. Note: if a second Decision for the same underlying operation
+    collided on idempotency_key, propose_action() returns the FIRST
+    decision's existing action row without inserting a new one -- so
+    this lookup can legitimately return None for a later decision even
+    though an action did happen for that same real-world payment
+    attempt. Acceptable for the read-only API surface this serves;
+    not a correctness issue for the pipeline itself."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute("select * from actions where decision_id = %s", (decision_id,))
+        return cur.fetchone()

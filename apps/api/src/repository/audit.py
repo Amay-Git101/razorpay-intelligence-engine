@@ -44,3 +44,19 @@ def list_audit_trail_for_decision(conn: psycopg.Connection, decision_id: str) ->
             (decision_id,),
         )
         return cur.fetchall()
+
+
+def list_audit_trail(conn: psycopg.Connection, event_id: str | None, decision_id: str | None) -> list[dict[str, Any]]:
+    """The complete chronological checkpoint sequence for one flow,
+    combining both audit_entries columns that scope to it:
+    EVENT_INGESTED is recorded against event_id only (it predates any
+    Decision); everything from DECISION_CREATED onward is recorded
+    against decision_id. Same query tests/support.py's full_audit_trail
+    test helper already uses -- promoted here as a real, production
+    read function so the API doesn't need to depend on test code."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            "select * from audit_entries where event_id = %s or decision_id = %s order by sequence_number asc",
+            (event_id, decision_id),
+        )
+        return cur.fetchall()
