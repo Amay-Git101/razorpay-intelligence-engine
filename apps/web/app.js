@@ -648,104 +648,28 @@ async function handleReconcile(orderId) {
 }
 
 // ---------------------------------------------------------------------------
-// Live proof (landing page) -- reads the real timeline for one showcased
-// order via the existing API, same as the console's order-detail view.
-// Never invents a stage; a stage the API didn't reach renders as
-// "not reached", exactly like the console.
+// Interactive recovery experience (landing page) -- reads the real timeline
+// for one showcased order via the existing API, same data the console's
+// order-detail view uses. Never invents a stage or an outcome; a stage the
+// API didn't reach renders as "not reached", and if the order can't be
+// read at all, the section says so explicitly instead of fabricating a
+// result.
 // ---------------------------------------------------------------------------
 
-let proofAttempted = false;
+const qs = (sel, root) => (root || document).querySelector(sel);
+const qsa = (sel, root) => Array.from((root || document).querySelectorAll(sel));
 
-async function renderLiveProof() {
-  if (proofAttempted) return; // fetched once per page load; anchor navigation within the landing page shouldn't re-fetch
-  proofAttempted = true;
-
-  const loading = document.getElementById("proof-loading");
-  const errorBox = document.getElementById("proof-error");
-  const content = document.getElementById("proof-content");
-
-  hide(errorBox);
-  hide(content);
-  show(loading);
-
-  let timeline;
-  try {
-    timeline = await Api.orderTimeline(SHOWCASE_ORDER_ID);
-  } catch (err) {
-    hide(loading);
-    errorBox.textContent =
-      `Live proof data isn't reachable right now (${err.message}). ` +
-      "This section reads a real order from the live API rather than embedding a fixed result -- " +
-      "see the README's recorded verification for the same run.";
-    show(errorBox);
-    return;
-  }
-
-  hide(loading);
-  clear(content);
-
-  content.appendChild(el("span", "proof-badge", "Verified Razorpay Test Mode demonstration"));
-  content.appendChild(el("div", "proof-amount", formatAmount(timeline.order.amount, timeline.order.currency)));
-
-  const latestAttempt = timeline.payment_attempts.length
-    ? timeline.payment_attempts[timeline.payment_attempts.length - 1]
-    : null;
-
-  const chain = el("div", "proof-chain");
-  const step = (label, valueText, semanticClass) => {
-    const node = el("div", `proof-step proof-step-${semanticClass}`);
-    node.appendChild(el("div", "proof-step-label", label));
-    node.appendChild(el("div", "proof-step-value", valueText));
-    return node;
-  };
-  const arrow = () => el("div", "proof-step-arrow", "↓");
-
-  chain.appendChild(
-    step(
-      "Payment observed",
-      latestAttempt ? `${latestAttempt.status}${latestAttempt.captured ? "" : " / captured=false"}` : "Not observed",
-      latestAttempt ? paymentAttemptSemantic(latestAttempt) : "pending",
-    ),
-  );
-  chain.appendChild(arrow());
-  chain.appendChild(
-    step("Decision", timeline.decision ? timeline.decision.decision_type : "Not reached", timeline.decision ? "neutral" : "pending"),
-  );
-  chain.appendChild(arrow());
-  chain.appendChild(
-    step("Policy", timeline.policy ? policyOutcomeText(timeline.policy) : "Not reached", timeline.policy ? policySemantic(timeline.policy) : "pending"),
-  );
-  chain.appendChild(arrow());
-  chain.appendChild(
-    step("Action", timeline.action ? timeline.action.status : "Not reached", timeline.action ? statusClass(timeline.action.status) : "pending"),
-  );
-  chain.appendChild(arrow());
-  chain.appendChild(
-    step(
-      "Verification",
-      timeline.verification ? timeline.verification.result : "Not reached",
-      timeline.verification ? statusClass(timeline.verification.result) : "pending",
-    ),
-  );
-  chain.appendChild(arrow());
-  chain.appendChild(
-    step(
-      "Outcome",
-      timeline.outcome ? `${formatAmount(timeline.outcome.recovered_amount, "")} recovered` : "Not available",
-      timeline.outcome ? "success" : "pending",
-    ),
-  );
-  content.appendChild(chain);
-
-  const link = el("a", "proof-link", "View the full audit trail in the console →");
-  link.href = `#order/${encodeURIComponent(SHOWCASE_ORDER_ID)}`;
-  content.appendChild(link);
-
-  show(content);
+function prefersReducedMotion() {
+  return window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
-function paymentAttemptSemantic(attempt) {
-  return PAYMENT_ATTEMPT_STATUS_SEMANTICS[attempt.status] || "neutral";
+let showcaseFetchPromise = null;
+
+function fetchShowcaseTimeline() {
+  if (!showcaseFetchPromise) {
+    showcaseFetchPromise = Api.orderTimeline(SHOWCASE_ORDER_ID);
+  }
+  return showcaseFetchPromise;
 }
 
 function policyOutcomeText(policy) {
@@ -754,10 +678,523 @@ function policyOutcomeText(policy) {
   return "ALLOW";
 }
 
-function policySemantic(policy) {
-  if (policy.allowed === false) return "blocked";
-  if (policy.requires_approval) return "warning";
-  return "success";
+function kvRowSimple(label, value) {
+  const row = el("div", "detail-kv");
+  row.appendChild(el("span", "detail-kv-key", label));
+  row.appendChild(el("span", "detail-kv-val", value === null || value === undefined ? "—" : String(value)));
+  return row;
+}
+
+const STAGE_ORDER = ["observe", "reason", "authorize", "act", "verify", "recovered"];
+
+async function initRecoveryExperience() {
+  const errorBox = document.getElementById("recovery-data-error");
+
+  // Navigation/playback works regardless of whether live data is
+  // reachable -- only the stage content itself depends on the fetch.
+  setupScrollActivation();
+  setupTransportControls();
+
+  let timeline;
+  try {
+    timeline = await fetchShowcaseTimeline();
+  } catch (err) {
+    errorBox.textContent =
+      `Demo data unavailable -- this section reads a real order (${SHOWCASE_ORDER_ID}) from the live API and ` +
+      `never fabricates a result if it can't be reached (${err.message}).`;
+    show(errorBox);
+    document.getElementById("scene-stack").classList.add("data-unavailable");
+    blankSceneDefaults();
+    return;
+  }
+
+  populateRecoveryScenes(timeline);
+}
+
+// Overwrites the illustrative static placeholder copy in the HTML (which
+// exists so the page has something to show while the fetch is in flight)
+// with explicit "unavailable" markers -- so a fetch failure never leaves
+// a stale "RECOMMEND_CAPTURE" / "VERIFIED SUCCESS" placeholder looking
+// like a real result.
+function blankSceneDefaults() {
+  qs('[data-el="observe-amount"]').textContent = "—";
+  qs('[data-el="observe-status"]').textContent = "NOT AVAILABLE";
+  qs('[data-el="observe-captured"]').textContent = "";
+  qs('[data-el="observe-plain"]').textContent = "Demo data unavailable.";
+  qs('[data-el="reason-amount"]').textContent = "—";
+  qs('[data-el="reason-result"]').textContent = "—";
+  qs('[data-el="reason-plain"]').textContent = "Demo data unavailable.";
+  qs('[data-el="authorize-decision"]').textContent = "—";
+  qs('[data-el="authorize-plain"]').textContent = "Demo data unavailable.";
+  qs('[data-el="authorize-result"]').textContent = "—";
+  qs('[data-el="authorize-limit"]').textContent = "—";
+  qs('[data-el="authorize-amount"]').textContent = "—";
+  qs('[data-el="act-action-type"]').textContent = "—";
+  qs('[data-el="act-amount"]').textContent = "—";
+  qs('[data-el="act-result"]').textContent = "—";
+  qs('[data-el="act-plain"]').textContent = "Demo data unavailable.";
+  qs('[data-el="verify-response-sub"]').textContent = "—";
+  qs('[data-el="verify-result"]').textContent = "—";
+  qs('[data-el="verify-plain"]').textContent = "Demo data unavailable.";
+  qs('[data-el="result-badge"]').textContent = "DATA UNAVAILABLE";
+  qs('[data-el="result-badge"]').classList.remove("result-badge-success");
+  qs('[data-el="result-amount"]').textContent = "—";
+  qs(".result-sub").textContent = "";
+  qs('[data-el="result-chain"]').textContent = "";
+}
+
+function populateRecoveryScenes(timeline) {
+  const order = timeline.order;
+  const latestAttempt = timeline.payment_attempts.length
+    ? timeline.payment_attempts[timeline.payment_attempts.length - 1]
+    : null;
+  const decision = timeline.decision;
+  const policy = timeline.policy;
+  const action = timeline.action;
+  const verification = timeline.verification;
+  const outcome = timeline.outcome;
+  const amountText = formatAmount(order.amount, order.currency);
+
+  // -- Observe --
+  qs('[data-el="observe-amount"]').textContent = amountText;
+  qs('[data-el="observe-status"]').textContent = latestAttempt ? latestAttempt.status.toUpperCase() : "NOT OBSERVED";
+  qs('[data-el="observe-captured"]').textContent = latestAttempt ? `captured = ${latestAttempt.captured}` : "";
+  qs('[data-el="observe-plain"]').textContent = latestAttempt
+    ? `The payment is ${latestAttempt.status}${latestAttempt.captured ? " and already captured" : ", but the merchant does not have a captured payment yet"}.`
+    : "No payment attempt has been observed for this order yet.";
+  const observeDetail = qs('[data-el="observe-detail-body"]');
+  clear(observeDetail);
+  observeDetail.appendChild(kvRowSimple("payment status", latestAttempt ? latestAttempt.status : "—"));
+  observeDetail.appendChild(kvRowSimple("captured flag", latestAttempt ? latestAttempt.captured : "—"));
+  observeDetail.appendChild(kvRowSimple("payment attempt id", latestAttempt ? latestAttempt.id : "—"));
+  observeDetail.appendChild(kvRowSimple("order id", order.id));
+
+  // -- Reason --
+  qs('[data-el="reason-amount"]').textContent = amountText;
+  qs('[data-el="reason-result"]').textContent = decision ? decision.decision_type : "NO_ACTION";
+  qs('[data-el="reason-plain"]').textContent = decision
+    ? decisionPlainEnglish(decision.decision_type)
+    : "No decision has been recorded for this order yet.";
+  const reasonDetail = qs('[data-el="reason-detail-body"]');
+  clear(reasonDetail);
+  reasonDetail.appendChild(kvRowSimple("model", decision ? decision.model_version : "—"));
+  reasonDetail.appendChild(kvRowSimple("confidence", decision ? decision.confidence.toFixed(3) : "—"));
+  reasonDetail.appendChild(kvRowSimple("reason codes", decision ? decision.reason_codes.join(", ") : "—"));
+
+  // -- Authorize / Policy --
+  qs('[data-el="authorize-decision"]').textContent = decision ? decision.decision_type : "NO_ACTION";
+  qs('[data-el="authorize-amount"]').textContent = `Payment: ${amountText}`;
+  const marker = qs('[data-el="authorize-marker"]');
+  marker.classList.remove("marker-allow", "marker-approval", "marker-block");
+  if (policy) {
+    if (policy.allowed === false) {
+      marker.classList.add("marker-block");
+      qs('[data-el="authorize-limit"]').textContent = "Outside this merchant's allowed policy band";
+    } else if (policy.requires_approval) {
+      marker.classList.add("marker-approval");
+      qs('[data-el="authorize-limit"]').textContent = "Within the approval-required band";
+    } else {
+      marker.classList.add("marker-allow");
+      qs('[data-el="authorize-limit"]').textContent = "Within this merchant's automatic-capture limit";
+    }
+    qs('[data-el="authorize-result"]').textContent = `✓ ${policyOutcomeText(policy)}`;
+    qs('[data-el="authorize-plain"]').textContent = policyPlainEnglish(policy);
+  } else {
+    qs('[data-el="authorize-limit"]').textContent = "Not policy-gated";
+    qs('[data-el="authorize-result"]').textContent = "Not reached";
+    qs('[data-el="authorize-plain"]').textContent = "No action was proposed for this decision, so policy was never evaluated.";
+  }
+  const authorizeDetail = qs('[data-el="authorize-detail-body"]');
+  clear(authorizeDetail);
+  authorizeDetail.appendChild(kvRowSimple("authority_level_granted", policy ? policy.authority_level_granted : "—"));
+  authorizeDetail.appendChild(kvRowSimple("requires_approval", policy ? policy.requires_approval : "—"));
+  authorizeDetail.appendChild(kvRowSimple("allowed", policy ? policy.allowed : "—"));
+  authorizeDetail.appendChild(kvRowSimple("reason codes", policy ? policy.reason_codes.join(", ") : "—"));
+
+  // -- Act --
+  qs('[data-el="act-action-type"]').textContent = action ? action.action_type : "NOT PROPOSED";
+  qs('[data-el="act-amount"]').textContent = amountText;
+  const actOutcome = action && action.execution_reference ? action.execution_reference.outcome : null;
+  qs('[data-el="act-result"]').textContent = actOutcome ? `✓ ${actOutcome.toUpperCase()}` : action ? `✓ ${action.status}` : "Not reached";
+  qs('[data-el="act-plain"]').textContent = action
+    ? "The permitted action was sent through Razorpay's capture write path."
+    : "No action was proposed for this decision -- nothing was sent to Razorpay.";
+  const actDetail = qs('[data-el="act-detail-body"]');
+  clear(actDetail);
+  actDetail.appendChild(kvRowSimple("action_type", action ? action.action_type : "—"));
+  actDetail.appendChild(kvRowSimple("status", action ? action.status : "—"));
+  actDetail.appendChild(kvRowSimple("execution outcome", actOutcome || "—"));
+
+  // -- Verify --
+  qs('[data-el="verify-response-sub"]').textContent = verification
+    ? `captured = ${verification.result === "VERIFIED_SUCCESS"}`
+    : "not reached";
+  qs('[data-el="verify-result"]').textContent = verification ? `✓ ${verification.result}` : "Not reached";
+  qs('[data-el="verify-plain"]').textContent = verification
+    ? "We independently re-read Razorpay and confirmed the payment's actual state before recording an outcome."
+    : "This action has not been verified yet.";
+  const verifyDetail = qs('[data-el="verify-detail-body"]');
+  clear(verifyDetail);
+  verifyDetail.appendChild(kvRowSimple("result", verification ? verification.result : "—"));
+  verifyDetail.appendChild(kvRowSimple("reason", verification ? verification.reason || "—" : "—"));
+  verifyDetail.appendChild(kvRowSimple("read attempts", verification ? verification.attempt_count : "—"));
+
+  // -- Recovered --
+  const success = verification && verification.result === "VERIFIED_SUCCESS";
+  qs('[data-el="result-badge"]').textContent = success
+    ? "✓ VERIFIED SUCCESS"
+    : verification
+      ? `${verification.result}`
+      : "PIPELINE INCOMPLETE";
+  qs('[data-el="result-badge"]').classList.toggle("result-badge-success", !!success);
+  qs('[data-el="result-amount"]').textContent = outcome ? formatAmount(outcome.recovered_amount, "") : amountText;
+  qs('.result-sub').textContent = outcome ? "RECOVERED" : "NOT RECOVERED";
+  const chainParts = [
+    latestAttempt ? latestAttempt.status.toUpperCase() : null,
+    decision ? decision.decision_type : null,
+    policy ? policyOutcomeText(policy) : null,
+    action ? "CAPTURE_PAYMENT" : null,
+    verification ? verification.result : null,
+  ].filter(Boolean);
+  qs('[data-el="result-chain"]').textContent = chainParts.join("  →  ");
+}
+
+function decisionPlainEnglish(decisionType) {
+  if (decisionType === "RECOMMEND_CAPTURE") return "The engine recommends capturing the authorized payment.";
+  if (decisionType === "RECOMMEND_RETRY_PROMPT") return "The engine recommends prompting the customer to retry.";
+  if (decisionType === "NO_ACTION") return "The engine found nothing actionable in this observation.";
+  return `The engine recorded ${decisionType}.`;
+}
+
+function policyPlainEnglish(policy) {
+  if (policy.allowed === false) return "This merchant's policy blocks automatic action for a payment of this size.";
+  if (policy.requires_approval) return "This payment requires merchant approval before any action is taken.";
+  return "This merchant allows automatic capture for a payment of this size.";
+}
+
+// -- Scroll-triggered stage activation --
+
+let currentStageIndex = -1;
+const animatedStages = new Set();
+
+function activateStage(stageName, opts) {
+  const options = opts || {};
+  const idx = STAGE_ORDER.indexOf(stageName);
+  if (idx === -1 || idx === currentStageIndex) {
+    if (options.scroll) scrollToStage(stageName);
+    return;
+  }
+  currentStageIndex = idx;
+
+  qsa(".scene").forEach((scene) => {
+    const sIdx = STAGE_ORDER.indexOf(scene.dataset.stage);
+    scene.classList.toggle("is-active", sIdx === idx);
+    scene.classList.toggle("is-done", sIdx < idx);
+  });
+  qsa(".stage-nav-btn").forEach((btn) => {
+    btn.classList.toggle("is-active", btn.dataset.target === stageName);
+  });
+  const fill = document.getElementById("progress-fill");
+  if (fill) fill.style.height = `${((idx + 1) / STAGE_ORDER.length) * 100}%`;
+
+  triggerStageAnimation(stageName);
+  if (options.scroll) scrollToStage(stageName);
+}
+
+function scrollToStage(stageName) {
+  const target = qs(`.scene[data-stage="${stageName}"]`);
+  if (target) target.scrollIntoView({ behavior: prefersReducedMotion() ? "auto" : "smooth", block: "center" });
+}
+
+function triggerStageAnimation(stageName) {
+  if (animatedStages.has(stageName)) {
+    finalizeStageVisual(stageName);
+    return;
+  }
+  animatedStages.add(stageName);
+  const delay = prefersReducedMotion() ? 0 : 700;
+
+  if (stageName === "reason") {
+    setTimeout(() => {
+      hide(qs('[data-el="reason-evaluating"]'));
+      show(qs('[data-el="reason-result"]'));
+    }, delay);
+  } else if (stageName === "authorize") {
+    setTimeout(() => {
+      qs('[data-el="authorize-marker"]').classList.add("marker-settled");
+      show(qs('[data-el="authorize-result"]'));
+    }, delay);
+  } else if (stageName === "act") {
+    setTimeout(() => {
+      hide(qs('[data-el="act-inflight"]'));
+      show(qs('[data-el="act-result"]'));
+    }, delay);
+  } else if (stageName === "verify") {
+    setTimeout(() => show(qs('[data-el="verify-response-row"]')), delay);
+    setTimeout(() => show(qs('[data-el="verify-result"]')), delay + (prefersReducedMotion() ? 0 : 500));
+  }
+}
+
+function finalizeStageVisual(stageName) {
+  if (stageName === "reason") {
+    hide(qs('[data-el="reason-evaluating"]'));
+    show(qs('[data-el="reason-result"]'));
+  } else if (stageName === "authorize") {
+    qs('[data-el="authorize-marker"]').classList.add("marker-settled");
+    show(qs('[data-el="authorize-result"]'));
+  } else if (stageName === "act") {
+    hide(qs('[data-el="act-inflight"]'));
+    show(qs('[data-el="act-result"]'));
+  } else if (stageName === "verify") {
+    show(qs('[data-el="verify-response-row"]'));
+    show(qs('[data-el="verify-result"]'));
+  }
+}
+
+function resetSceneVisuals() {
+  hide(qs('[data-el="reason-result"]'));
+  show(qs('[data-el="reason-evaluating"]'));
+  qs('[data-el="authorize-marker"]').classList.remove("marker-settled");
+  hide(qs('[data-el="authorize-result"]'));
+  hide(qs('[data-el="act-result"]'));
+  show(qs('[data-el="act-inflight"]'));
+  hide(qs('[data-el="verify-response-row"]'));
+  hide(qs('[data-el="verify-result"]'));
+  qsa(".scene").forEach((scene) => scene.classList.remove("is-active", "is-done"));
+  const fill = document.getElementById("progress-fill");
+  if (fill) fill.style.height = "0%";
+  currentStageIndex = -1;
+  animatedStages.clear();
+}
+
+function setupScrollActivation() {
+  if (!("IntersectionObserver" in window)) return;
+  const observer = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) activateStage(entry.target.dataset.stage);
+      });
+    },
+    { threshold: 0.55 },
+  );
+  qsa(".scene").forEach((scene) => observer.observe(scene));
+}
+
+// -- Transport controls: play / pause / replay --
+
+let autoplayTimer = null;
+let autoplayIndex = 0;
+const AUTOPLAY_STEP_MS = 2600;
+
+function setupTransportControls() {
+  const watchBtn = document.getElementById("watch-recovery-btn");
+  if (watchBtn) {
+    watchBtn.addEventListener("click", () => {
+      document.getElementById("recovery").scrollIntoView({ behavior: prefersReducedMotion() ? "auto" : "smooth" });
+      replayAutoplay();
+    });
+  }
+  const playBtn = document.getElementById("transport-play");
+  const pauseBtn = document.getElementById("transport-pause");
+  const replayBtn = document.getElementById("transport-replay");
+  if (playBtn) playBtn.addEventListener("click", startAutoplay);
+  if (pauseBtn) pauseBtn.addEventListener("click", pauseAutoplay);
+  if (replayBtn) replayBtn.addEventListener("click", replayAutoplay);
+
+  qsa(".stage-nav-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      pauseAutoplay();
+      activateStage(btn.dataset.target, { scroll: true });
+    });
+  });
+}
+
+function startAutoplay() {
+  pauseAutoplay();
+  const playBtn = document.getElementById("transport-play");
+  const pauseBtn = document.getElementById("transport-pause");
+  if (playBtn) playBtn.disabled = true;
+  if (pauseBtn) pauseBtn.disabled = false;
+
+  if (autoplayIndex >= STAGE_ORDER.length) autoplayIndex = 0;
+
+  const step = () => {
+    activateStage(STAGE_ORDER[autoplayIndex], { scroll: true });
+    autoplayIndex += 1;
+    if (autoplayIndex >= STAGE_ORDER.length) {
+      pauseAutoplay();
+    }
+  };
+  step();
+  autoplayTimer = setInterval(step, AUTOPLAY_STEP_MS);
+}
+
+function pauseAutoplay() {
+  if (autoplayTimer) {
+    clearInterval(autoplayTimer);
+    autoplayTimer = null;
+  }
+  const playBtn = document.getElementById("transport-play");
+  const pauseBtn = document.getElementById("transport-pause");
+  if (playBtn) playBtn.disabled = false;
+  if (pauseBtn) pauseBtn.disabled = true;
+}
+
+function replayAutoplay() {
+  autoplayIndex = 0;
+  resetSceneVisuals();
+  startAutoplay();
+}
+
+// ---------------------------------------------------------------------------
+// Audit trail proof chain (landing page)
+// ---------------------------------------------------------------------------
+
+const CHECKPOINT_INFO = {
+  EVENT_INGESTED: "A new payment-state change was recorded from Razorpay.",
+  DECISION_CREATED: "The engine recorded its recommendation.",
+  POLICY_EVALUATED: "Merchant policy decided whether the action may proceed.",
+  ACTION_AUTHORIZED: "The action was cleared to execute.",
+  ACTION_EXECUTED: "The write call to Razorpay was made.",
+  VERIFICATION_COMPLETED: "Razorpay was independently re-read to confirm the outcome.",
+  ACTION_BLOCKED: "Policy prevented this action from executing.",
+  APPROVAL_PENDING: "This action is waiting on merchant approval.",
+  APPROVAL_GRANTED: "A merchant approved a pending action.",
+  RECONCILIATION_ANOMALY: "An unexpected state transition was recorded rather than guessed at.",
+};
+
+async function initAuditProof() {
+  const list = document.getElementById("proof-audit");
+  if (!list) return;
+  let timeline;
+  try {
+    timeline = await fetchShowcaseTimeline();
+  } catch (err) {
+    list.appendChild(el("li", "audit-proof-empty", "Audit trail unavailable -- live data could not be reached."));
+    return;
+  }
+  if (!timeline.audit || timeline.audit.length === 0) {
+    list.appendChild(el("li", "audit-proof-empty", "No audit checkpoints recorded yet for this order."));
+    return;
+  }
+  timeline.audit.forEach((entry, i) => {
+    const item = el("li", "audit-proof-item");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "audit-proof-head";
+    btn.appendChild(el("span", "audit-proof-num", String(i + 1).padStart(2, "0")));
+    btn.appendChild(el("span", "audit-proof-checkpoint", entry.checkpoint));
+    item.appendChild(btn);
+
+    const body = el("div", "audit-proof-body hidden");
+    body.appendChild(el("p", "audit-proof-plain", CHECKPOINT_INFO[entry.checkpoint] || "A checkpoint was recorded."));
+    const pre = document.createElement("pre");
+    pre.className = "audit-proof-payload";
+    pre.textContent = JSON.stringify(entry.snapshot, null, 2);
+    body.appendChild(pre);
+    item.appendChild(body);
+
+    btn.addEventListener("click", () => body.classList.toggle("hidden"));
+    list.appendChild(item);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// AI judgment -- interactive reasons
+// ---------------------------------------------------------------------------
+
+const JUDGMENT_REASON_TEXT = {
+  explain: "Every decision carries the exact reason codes that produced it -- nothing is a black box.",
+  deterministic: "The same observed state always yields the same decision, every time.",
+  policy: "Merchant-configured limits gate every action, unconditionally -- the engine can only recommend.",
+  audit: "Every step is written to an append-only audit trail, not reconstructed after the fact.",
+  verify: "No action is trusted without independently re-confirming it against Razorpay.",
+};
+
+function initJudgmentReasons() {
+  const detail = document.getElementById("judgment-reason-detail");
+  qsa(".judgment-reason").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      qsa(".judgment-reason").forEach((b) => b.classList.remove("is-active"));
+      btn.classList.add("is-active");
+      if (detail) detail.textContent = JUDGMENT_REASON_TEXT[btn.dataset.reason] || "";
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Failure recovery -- interactive stepper
+// ---------------------------------------------------------------------------
+
+const INCIDENT_STEPS = [
+  { label: "Expected", text: "A fresh Test Mode order should land in AUTHORIZED / captured=false, ready for the pipeline to act on." },
+  { label: "First test", text: "Instead, an initial transaction reached captured before our reconciliation flow ever observed it as authorized -- there was nothing left to act on." },
+  { label: "Investigate", text: "We checked, in order: the fetched payment state, how the order was created, the Checkout configuration used to pay it, the read-client adapter's invocation, and reconciliation's status-to-event mapping." },
+  { label: "Isolate", text: "Our code never captured anything -- the read-only client has no write method, and the write path is never invoked by reconciliation. The order itself reached Razorpay already captured, most likely created without an explicit manual-capture configuration." },
+  { label: "Fix", text: "We created a fresh Test Mode order with explicit manual capture." },
+  { label: "Result", text: "It correctly landed in AUTHORIZED / captured=false. Our system then produced RECOMMEND_CAPTURE → ALLOW → CAPTURE_PAYMENT → VERIFIED_SUCCESS, and Razorpay independently confirmed captured=true." },
+];
+
+let incidentIndex = 0;
+
+function initIncidentStepper() {
+  const stepsWrap = document.getElementById("incident-steps");
+  const dotsWrap = document.getElementById("incident-dots");
+  if (!stepsWrap || !dotsWrap) return;
+
+  INCIDENT_STEPS.forEach((step, i) => {
+    const panel = el("div", "incident-step");
+    panel.appendChild(el("span", "incident-step-label", step.label));
+    panel.appendChild(el("p", "incident-step-text", step.text));
+    stepsWrap.appendChild(panel);
+
+    const dot = document.createElement("button");
+    dot.type = "button";
+    dot.className = "incident-dot";
+    dot.setAttribute("aria-label", `Step ${i + 1}: ${step.label}`);
+    dot.addEventListener("click", () => showIncidentStep(i));
+    dotsWrap.appendChild(dot);
+  });
+
+  const prevBtn = document.getElementById("incident-prev");
+  const nextBtn = document.getElementById("incident-next");
+  if (prevBtn) prevBtn.addEventListener("click", () => showIncidentStep(Math.max(0, incidentIndex - 1)));
+  if (nextBtn) nextBtn.addEventListener("click", () => showIncidentStep(Math.min(INCIDENT_STEPS.length - 1, incidentIndex + 1)));
+
+  showIncidentStep(0);
+}
+
+function showIncidentStep(i) {
+  incidentIndex = i;
+  qsa(".incident-step").forEach((p, idx) => p.classList.toggle("is-active", idx === i));
+  qsa(".incident-dot").forEach((d, idx) => d.classList.toggle("is-active", idx === i));
+  const prevBtn = document.getElementById("incident-prev");
+  const nextBtn = document.getElementById("incident-next");
+  if (prevBtn) prevBtn.disabled = i === 0;
+  if (nextBtn) nextBtn.disabled = i === INCIDENT_STEPS.length - 1;
+}
+
+// ---------------------------------------------------------------------------
+// Detail toggles (plain-English / technical-detail disclosure)
+// ---------------------------------------------------------------------------
+
+function initDetailToggles() {
+  qsa(".detail-toggle").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const panel = document.getElementById(btn.dataset.detail);
+      if (!panel) return;
+      const nowHidden = panel.classList.toggle("hidden");
+      btn.textContent = `Technical detail ${nowHidden ? "▸" : "▾"}`;
+    });
+  });
+}
+
+function initLanding() {
+  initDetailToggles();
+  initJudgmentReasons();
+  initIncidentStepper();
+  initRecoveryExperience();
+  initAuditProof();
 }
 
 // ---------------------------------------------------------------------------
@@ -805,7 +1242,6 @@ async function router() {
     hide(dashboardView);
     hide(detailView);
     show(landingView);
-    await renderLiveProof();
   }
 }
 
@@ -817,4 +1253,5 @@ document.getElementById("back-to-dashboard").addEventListener("click", navigateT
 window.addEventListener("hashchange", router);
 
 refreshHealth();
+initLanding();
 router();
