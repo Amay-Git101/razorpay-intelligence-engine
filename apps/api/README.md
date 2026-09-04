@@ -1,23 +1,32 @@
 # apps/api
 
-Phase 3 foundation only: PostgreSQL schema, domain contracts, and a
-repository layer. No FastAPI app, no ingestion/context/intelligence/
-policy/action/verification modules yet — those are later gates in the
-same phase, pending review of this foundation.
+The full decision-intelligence pipeline plus the FastAPI HTTP surface that serves both the
+API and the static frontend (`apps/web/`). See the [repository root README](../../README.md)
+for the product story, architecture diagram, and demo instructions -- this file covers only
+this package's local layout and setup.
 
 ## Layout
 
 ```text
-src/domain/contracts.py   Pydantic contracts (ContextSnapshot, Decision,
-                           PolicyEvaluation, Action, etc.) + provenance
-                           validation + idempotency-key computation
-src/db/migrations/        Plain SQL migrations (0001_init.sql = full schema)
-src/db/connection.py      DATABASE_URL -> psycopg connection
-src/db/run_migrations.py  Minimal migration runner (no Alembic)
-src/repository/           One module per table — thin data-access functions only,
+src/domain/contracts.py   Pydantic contracts (ContextSnapshot, Decision, PolicyEvaluation,
+                           Action, etc.) + provenance validation
+src/db/                   DATABASE_URL -> psycopg connection, plain-SQL migrations
+src/repository/           One module per table -- thin data-access functions only,
                            no business logic
-tests/test_domain_contracts.py   Pure Python, no DB required
-tests/test_db_invariants.py      Requires a live Postgres — see below
+src/razorpay_client/      Read-only Razorpay client -- no write method exists here
+src/reconciliation/       Polls Razorpay, diffs state, records canonical events
+src/intelligence/         RuleBasedEngine -- the deterministic decision module
+src/policy/               Merchant policy_config enforcement
+src/action/                The only module allowed to call Razorpay's capture endpoint
+src/verification/         Independently re-confirms the outcome against Razorpay
+src/feedback/             Verified-outcome -> expectation-baseline calibration
+src/observability/        Read-only metrics aggregation
+src/evaluation/           Independent RuleBasedEngine evaluation harness
+src/pipeline/             Shared reconcile -> decide -> propose -> verify orchestration
+src/manual_run/           CLI entry point over the shared pipeline
+src/api/                  FastAPI HTTP surface (this app's backend + static frontend mount)
+tests/                    pytest suite, including test_architecture_boundaries.py
+test-checkout.html        Manual Razorpay Test Mode checkout page used for live verification
 ```
 
 ## Local setup
@@ -29,25 +38,23 @@ python -m venv .venv
 # .venv\Scripts\pip.exe install -e ".[dev]"  # PowerShell
 ```
 
-Run the DB-independent tests (always available):
-
 ```bash
-.venv/Scripts/pytest tests/test_domain_contracts.py -v
-```
-
-## Running the DB-dependent tests
-
-**As of Phase 3 gate A–D, this project has no reachable PostgreSQL
-instance** — Docker Desktop is not installed, and no native Postgres
-install exists on the development machine. `tests/test_db_invariants.py`
-is fully written but has not been executed. See the Phase 3 gate report
-(conversation record / `docs/phase3-gate-a-d-report.md`) for unblock
-options.
-
-Once a Postgres instance is reachable:
-
-```bash
-export DATABASE_URL=postgresql://user:password@host:5432/razorpay_decision_intelligence
-.venv/Scripts/python -m db.run_migrations
 .venv/Scripts/pytest tests/ -v
 ```
+
+DB-dependent tests skip cleanly (not a failure) if `DATABASE_URL` is unset -- everything else
+runs regardless.
+
+## Running against a live database
+
+```bash
+export DATABASE_URL=postgresql://user:password@host:5432/dbname
+export RAZORPAY_KEY_ID=rzp_test_xxxxxxxx
+export RAZORPAY_KEY_SECRET=xxxxxxxxxxxxxxxx
+
+.venv/Scripts/python -m db.run_migrations
+.venv/Scripts/pytest tests/ -v
+.venv/Scripts/python -m uvicorn api.app:app --reload
+```
+
+Open **http://127.0.0.1:8000/**.

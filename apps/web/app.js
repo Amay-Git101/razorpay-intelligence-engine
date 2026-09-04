@@ -160,6 +160,15 @@ const state = {
   merchantName: null,
 };
 
+// The one order the landing page's "Live proof" section showcases -- a
+// real, previously-reconciled Razorpay Test Mode order. This is just an
+// id reference (not business logic): the section always renders exactly
+// whatever GET /orders/{id}/timeline returns right now, live, with no
+// hardcoded outcome. If this order isn't present in the connected
+// database, the section shows an explicit "not available" state instead
+// of fabricating one.
+const SHOWCASE_ORDER_ID = "order_TXueleNMbhnp2s";
+
 // ---------------------------------------------------------------------------
 // Health indicator
 // ---------------------------------------------------------------------------
@@ -639,6 +648,119 @@ async function handleReconcile(orderId) {
 }
 
 // ---------------------------------------------------------------------------
+// Live proof (landing page) -- reads the real timeline for one showcased
+// order via the existing API, same as the console's order-detail view.
+// Never invents a stage; a stage the API didn't reach renders as
+// "not reached", exactly like the console.
+// ---------------------------------------------------------------------------
+
+let proofAttempted = false;
+
+async function renderLiveProof() {
+  if (proofAttempted) return; // fetched once per page load; anchor navigation within the landing page shouldn't re-fetch
+  proofAttempted = true;
+
+  const loading = document.getElementById("proof-loading");
+  const errorBox = document.getElementById("proof-error");
+  const content = document.getElementById("proof-content");
+
+  hide(errorBox);
+  hide(content);
+  show(loading);
+
+  let timeline;
+  try {
+    timeline = await Api.orderTimeline(SHOWCASE_ORDER_ID);
+  } catch (err) {
+    hide(loading);
+    errorBox.textContent =
+      `Live proof data isn't reachable right now (${err.message}). ` +
+      "This section reads a real order from the live API rather than embedding a fixed result -- " +
+      "see the README's recorded verification for the same run.";
+    show(errorBox);
+    return;
+  }
+
+  hide(loading);
+  clear(content);
+
+  content.appendChild(el("span", "proof-badge", "Verified Razorpay Test Mode demonstration"));
+  content.appendChild(el("div", "proof-amount", formatAmount(timeline.order.amount, timeline.order.currency)));
+
+  const latestAttempt = timeline.payment_attempts.length
+    ? timeline.payment_attempts[timeline.payment_attempts.length - 1]
+    : null;
+
+  const chain = el("div", "proof-chain");
+  const step = (label, valueText, semanticClass) => {
+    const node = el("div", `proof-step proof-step-${semanticClass}`);
+    node.appendChild(el("div", "proof-step-label", label));
+    node.appendChild(el("div", "proof-step-value", valueText));
+    return node;
+  };
+  const arrow = () => el("div", "proof-step-arrow", "↓");
+
+  chain.appendChild(
+    step(
+      "Payment observed",
+      latestAttempt ? `${latestAttempt.status}${latestAttempt.captured ? "" : " / captured=false"}` : "Not observed",
+      latestAttempt ? paymentAttemptSemantic(latestAttempt) : "pending",
+    ),
+  );
+  chain.appendChild(arrow());
+  chain.appendChild(
+    step("Decision", timeline.decision ? timeline.decision.decision_type : "Not reached", timeline.decision ? "neutral" : "pending"),
+  );
+  chain.appendChild(arrow());
+  chain.appendChild(
+    step("Policy", timeline.policy ? policyOutcomeText(timeline.policy) : "Not reached", timeline.policy ? policySemantic(timeline.policy) : "pending"),
+  );
+  chain.appendChild(arrow());
+  chain.appendChild(
+    step("Action", timeline.action ? timeline.action.status : "Not reached", timeline.action ? statusClass(timeline.action.status) : "pending"),
+  );
+  chain.appendChild(arrow());
+  chain.appendChild(
+    step(
+      "Verification",
+      timeline.verification ? timeline.verification.result : "Not reached",
+      timeline.verification ? statusClass(timeline.verification.result) : "pending",
+    ),
+  );
+  chain.appendChild(arrow());
+  chain.appendChild(
+    step(
+      "Outcome",
+      timeline.outcome ? `${formatAmount(timeline.outcome.recovered_amount, "")} recovered` : "Not available",
+      timeline.outcome ? "success" : "pending",
+    ),
+  );
+  content.appendChild(chain);
+
+  const link = el("a", "proof-link", "View the full audit trail in the console →");
+  link.href = `#order/${encodeURIComponent(SHOWCASE_ORDER_ID)}`;
+  content.appendChild(link);
+
+  show(content);
+}
+
+function paymentAttemptSemantic(attempt) {
+  return PAYMENT_ATTEMPT_STATUS_SEMANTICS[attempt.status] || "neutral";
+}
+
+function policyOutcomeText(policy) {
+  if (policy.allowed === false) return "BLOCK";
+  if (policy.requires_approval) return "APPROVAL_REQUIRED";
+  return "ALLOW";
+}
+
+function policySemantic(policy) {
+  if (policy.allowed === false) return "blocked";
+  if (policy.requires_approval) return "warning";
+  return "success";
+}
+
+// ---------------------------------------------------------------------------
 // View switching (hash-based, no router library)
 // ---------------------------------------------------------------------------
 
@@ -646,8 +768,8 @@ function navigateToOrder(orderId) {
   window.location.hash = `#order/${encodeURIComponent(orderId)}`;
 }
 
-function navigateToDashboard() {
-  window.location.hash = "";
+function navigateToConsole() {
+  window.location.hash = "#console";
 }
 
 function currentRoute() {
@@ -655,22 +777,35 @@ function currentRoute() {
   if (hash.startsWith("order/")) {
     return { view: "order", orderId: decodeURIComponent(hash.slice("order/".length)) };
   }
-  return { view: "dashboard" };
+  if (hash === "console") {
+    return { view: "console" };
+  }
+  return { view: "landing" };
 }
 
 async function router() {
   const route = currentRoute();
+  const landingView = document.getElementById("landing-view");
   const dashboardView = document.getElementById("dashboard-view");
   const detailView = document.getElementById("detail-view");
 
   if (route.view === "order") {
+    hide(landingView);
     hide(dashboardView);
     show(detailView);
+    window.scrollTo(0, 0);
     await renderOrderDetail(route.orderId);
-  } else {
+  } else if (route.view === "console") {
+    hide(landingView);
     hide(detailView);
     show(dashboardView);
+    window.scrollTo(0, 0);
     await renderDashboard();
+  } else {
+    hide(dashboardView);
+    hide(detailView);
+    show(landingView);
+    await renderLiveProof();
   }
 }
 
@@ -678,7 +813,7 @@ async function router() {
 // Init
 // ---------------------------------------------------------------------------
 
-document.getElementById("back-to-dashboard").addEventListener("click", navigateToDashboard);
+document.getElementById("back-to-dashboard").addEventListener("click", navigateToConsole);
 window.addEventListener("hashchange", router);
 
 refreshHealth();

@@ -3,15 +3,24 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Decision Intelligence Console</title>
+  <meta name="color-scheme" content="dark" />
+  <title>Decision Intelligence Console — Razorpay Payment Recovery</title>
+  <meta name="description" content="An explainable payment decision and recovery engine for Razorpay: observes payment state, evaluates recovery opportunities, applies merchant policy, executes authorized actions, and independently verifies the outcome. Razorpay Test Mode demo." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%230b0d12'/%3E%3Cpath d='M28 70 L28 30 L50 30 Q64 30 64 44 Q64 56 50 56 L38 56 L72 70' stroke='%235b8cff' stroke-width='8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
-  <header class="app-header">
-    <div class="brand">
-      <h1>Decision Intelligence Console</h1>
-      <p class="tagline">Contextual payment-recovery decisioning for Razorpay — observe, reason, authorize, act, verify.</p>
-    </div>
+  <header class="site-header">
+    <a href="#" class="brand" aria-label="Decision Intelligence — home">
+      <span class="brand-mark" aria-hidden="true">◆</span>
+      <span class="brand-name">Decision Intelligence</span>
+    </a>
+    <nav class="site-nav" aria-label="Primary">
+      <a href="#how-it-works">How it works</a>
+      <a href="#live-proof">Live proof</a>
+      <a href="#console">Console</a>
+      <a href="https://github.com/" target="_blank" rel="noopener" class="nav-github">GitHub ↗</a>
+    </nav>
     <div class="header-meta">
       <div class="merchant-block">
         <span class="label">Merchant</span>
@@ -24,8 +33,167 @@
   </header>
 
   <main id="app-root">
-    <!-- ================= DASHBOARD ================= -->
-    <section id="dashboard-view" class="view">
+
+    <!-- ================= LANDING ================= -->
+    <section id="landing-view" class="view">
+
+      <section class="hero">
+        <div class="hero-copy">
+          <span class="eyebrow">Razorpay Buildathon &middot; Test Mode integration</span>
+          <h1 class="hero-title">Payments don&rsquo;t need to end at <span class="hero-accent">AUTHORIZED</span>.</h1>
+          <p class="hero-sub">
+            An explainable payment decision and recovery engine for Razorpay. It observes payment state,
+            evaluates recovery opportunities, applies merchant policy, executes authorized actions, and
+            independently verifies the outcome &mdash; every step recorded to an audit trail.
+          </p>
+          <div class="hero-ctas">
+            <a href="#console" class="btn btn-primary">Explore the live console</a>
+            <a href="#how-it-works" class="btn btn-secondary">See how it works</a>
+          </div>
+          <p class="hero-note">
+            <span class="dot-live" aria-hidden="true"></span>
+            Live against Razorpay <strong>Test Mode</strong> and a real database &mdash; not a mock or a video.
+          </p>
+        </div>
+
+        <div class="hero-loop" aria-label="Recovery loop: Observe, Reason, Authorize, Act, Verify">
+          <div class="loop-stage"><span class="loop-index">1</span>Observe</div>
+          <div class="loop-arrow" aria-hidden="true">↓</div>
+          <div class="loop-stage"><span class="loop-index">2</span>Reason</div>
+          <div class="loop-arrow" aria-hidden="true">↓</div>
+          <div class="loop-stage"><span class="loop-index">3</span>Authorize</div>
+          <div class="loop-arrow" aria-hidden="true">↓</div>
+          <div class="loop-stage"><span class="loop-index">4</span>Act</div>
+          <div class="loop-arrow" aria-hidden="true">↓</div>
+          <div class="loop-stage loop-stage-final"><span class="loop-index">5</span>Verify</div>
+        </div>
+      </section>
+
+      <!-- ============ HOW IT WORKS ============ -->
+      <section id="how-it-works" class="landing-section">
+        <h2 class="section-title">How it works</h2>
+        <p class="section-lede">Five stages, each backed by a real, independently-testable module &mdash; no step is skipped or assumed.</p>
+
+        <div class="stage-grid">
+          <div class="stage-card">
+            <div class="stage-card-head"><span class="stage-num">01</span><h3>Observe</h3></div>
+            <p>Reconciliation polls Razorpay&rsquo;s Orders/Payments API and diffs the result against what we already
+              know, turning any change into a canonical event. Order-level state and individual payment attempts are
+              tracked as separate aggregates, exactly as Razorpay models them.</p>
+          </div>
+          <div class="stage-card">
+            <div class="stage-card-head"><span class="stage-num">02</span><h3>Reason</h3></div>
+            <p><code>RuleBasedEngine</code> evaluates the new event against fixed, deterministic rules and produces a
+              decision &mdash; e.g. <code>RECOMMEND_CAPTURE</code> for a payment that is <code>authorized</code> and not
+              yet captured. Every decision carries reason codes explaining exactly why.</p>
+          </div>
+          <div class="stage-card">
+            <div class="stage-card-head"><span class="stage-num">03</span><h3>Authorize</h3></div>
+            <p>The Policy engine checks the recommendation against the merchant&rsquo;s own configured auto-capture
+              and approval-band limits and returns
+              <code>ALLOW</code>, <code>APPROVAL_REQUIRED</code>, or <code>BLOCK</code>. Money-moving decisions never
+              bypass this gate.</p>
+          </div>
+          <div class="stage-card">
+            <div class="stage-card-head"><span class="stage-num">04</span><h3>Act</h3></div>
+            <p>Only an <code>ALLOW</code>ed action reaches the one write path in the system &mdash; a bounded call to
+              Razorpay&rsquo;s capture endpoint. Nothing else in the codebase is permitted to move money; this is
+              enforced by automated architecture-boundary tests, not just convention.</p>
+          </div>
+          <div class="stage-card">
+            <div class="stage-card-head"><span class="stage-num">05</span><h3>Verify</h3></div>
+            <p>The outcome is never assumed from the write call&rsquo;s response alone. Verification independently
+              re-fetches the payment from Razorpay and confirms status and amount match before recording
+              <code>VERIFIED_SUCCESS</code> &mdash; anything else escalates rather than guesses.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ LIVE PROOF ============ -->
+      <section id="live-proof" class="landing-section">
+        <h2 class="section-title">Live proof</h2>
+        <p class="section-lede">A real transaction, pulled live from the API right now &mdash; not a screenshot, not a fixture.</p>
+
+        <div id="proof-loading" class="loading-state">Loading live verification&hellip;</div>
+        <div id="proof-error" class="error-state hidden"></div>
+        <div id="proof-content" class="proof-card hidden"></div>
+      </section>
+
+      <!-- ============ AI JUDGMENT ============ -->
+      <section id="ai-judgment" class="landing-section">
+        <h2 class="section-title">Why a rule engine, not a model</h2>
+        <div class="judgment-grid">
+          <div class="judgment-panel">
+            <span class="judgment-tag">RuleBasedEngine &mdash; deterministic <code>rule_v1</code></span>
+            <p>
+              Payment capture is a money-moving operation. For v1, we deliberately chose a fixed, deterministic rule
+              engine over a learned/statistical model, because at this stage the priority is:
+            </p>
+            <ul class="judgment-list">
+              <li><strong>Explainability</strong> &mdash; every decision carries the exact reason codes that produced it.</li>
+              <li><strong>Deterministic behavior</strong> &mdash; the same observed state always yields the same decision.</li>
+              <li><strong>Explicit policy enforcement</strong> &mdash; merchant-configured limits gate every action, unconditionally.</li>
+              <li><strong>Auditability</strong> &mdash; every step is written to an append-only audit trail.</li>
+              <li><strong>Independent verification</strong> &mdash; no action is trusted without re-confirming it against Razorpay.</li>
+            </ul>
+          </div>
+          <div class="judgment-panel judgment-future">
+            <span class="judgment-tag judgment-tag-muted">Future direction &mdash; not yet built</span>
+            <p>The system already records verified capture outcomes against each decision&rsquo;s expectation baseline.
+              That is the foundation, not the finish line, for where this goes next:</p>
+            <div class="future-path">
+              <span>Historical verified outcomes</span>
+              <span class="future-arrow">→</span>
+              <span>Calibrated decision intelligence</span>
+              <span class="future-arrow">→</span>
+              <span>Improved recovery recommendations</span>
+            </div>
+            <p class="judgment-caveat">This is a stated direction, not a current capability. Nothing in this demo claims to be
+              ML or a fitted/learned model.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ FAILURE RECOVERY ============ -->
+      <section id="failure-recovery" class="landing-section">
+        <h2 class="section-title">What broke, and how we got out</h2>
+        <div class="incident-card">
+          <p class="incident-symptom">
+            <strong>Symptom:</strong> an initial Razorpay Test Mode transaction unexpectedly reached
+            <code>captured</code> state before our reconciliation flow ever observed it as
+            <code>authorized</code> / <code>captured: false</code> &mdash; so the recovery pipeline had nothing to act on.
+          </p>
+          <p class="incident-investigate"><strong>We investigated, in order:</strong> the fetched payment state, how
+            the order had been created, the Checkout configuration used to pay it, the read-client adapter's
+            invocation, reconciliation's status-to-event mapping, and whether our own code had somehow triggered a
+            capture.</p>
+          <p class="incident-finding">
+            <strong>Finding:</strong> our code never captured anything &mdash; the read-only client has no write
+            method, and the write path is never invoked by reconciliation. The order itself had reached Razorpay
+            already captured, most likely because it wasn&rsquo;t created with an explicit manual-capture
+            configuration, unlike an earlier, correctly-behaving reference order from our own verification history.
+          </p>
+          <p class="incident-fix">
+            <strong>Fix:</strong> we created a fresh Test Mode order with explicit manual capture. It correctly
+            landed in <code>authorized</code> / <code>captured: false</code>. Our system then produced
+            <code>RECOMMEND_CAPTURE → ALLOW → CAPTURE_PAYMENT → VERIFIED_SUCCESS</code>, and Razorpay independently
+            confirmed <code>captured: true</code> &mdash; the transaction shown live above.
+          </p>
+        </div>
+      </section>
+
+      <footer class="site-footer">
+        <span>Decision Intelligence Console &mdash; Razorpay Buildathon submission.</span>
+        <a href="#console" class="btn btn-secondary btn-small">Open the console →</a>
+      </footer>
+    </section>
+
+    <!-- ================= DASHBOARD / CONSOLE ================= -->
+    <section id="dashboard-view" class="view hidden">
+      <div class="console-intro">
+        <h2 class="section-title">Decision Intelligence Console</h2>
+        <p class="section-lede">Live merchant data, read directly from the API &mdash; nothing on this page is precomputed for demo purposes.</p>
+      </div>
       <div id="dashboard-loading" class="loading-state">Loading dashboard&hellip;</div>
       <div id="dashboard-error" class="error-state hidden"></div>
       <div id="dashboard-empty" class="empty-state hidden"></div>
@@ -45,7 +213,7 @@
 
     <!-- ================= ORDER DETAIL ================= -->
     <section id="detail-view" class="view hidden">
-      <button id="back-to-dashboard" class="link-button" type="button">&larr; Back to dashboard</button>
+      <button id="back-to-dashboard" class="link-button" type="button">&larr; Back to console</button>
 
       <div id="detail-loading" class="loading-state">Loading order&hellip;</div>
       <div id="detail-error" class="error-state hidden"></div>
@@ -59,9 +227,10 @@
           </div>
         </div>
 
-        <div id="reconcile-banner" class="banner hidden"></div>
+        <div id="reconcile-banner" class="banner hidden" role="status"></div>
 
         <h2 class="section-title">Pipeline</h2>
+        <p class="section-lede">Reconciliation → Decision → Policy → Action → Verification → Outcome</p>
         <div id="pipeline-tracker" class="tracker"></div>
 
         <div class="card-grid">
@@ -71,7 +240,8 @@
           <div class="card" id="verification-card"></div>
         </div>
 
-        <h2 class="section-title">Audit Trail</h2>
+        <h2 class="section-title">Audit trail</h2>
+        <p class="section-lede">An append-only proof chain &mdash; every checkpoint below was written by the backend as it happened.</p>
         <div id="audit-timeline" class="audit-timeline"></div>
       </div>
     </section>

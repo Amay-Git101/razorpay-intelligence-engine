@@ -1,0 +1,22 @@
+# Render.com Blueprint for the FastAPI app (apps/api), which also serves
+# the static frontend (apps/web/) via StaticFiles -- one deployed service
+# for the whole product. See README.md "Public deployment" for the exact
+# steps and the required environment variables. This file only describes
+# the deployment; it commits no credentials and triggers nothing on its
+# own -- Render only acts on it once you connect the repo yourself.
+services:
+  - type: web
+    name: razorpay-decision-intelligence
+    runtime: python
+    plan: free
+    rootDir: apps/api
+    buildCommand: pip install -e .
+    startCommand: uvicorn api.app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: RAZORPAY_KEY_ID
+        sync: false
+      - key: RAZORPAY_KEY_SECRET
+        sync: false
+    healthCheckPath: /health
