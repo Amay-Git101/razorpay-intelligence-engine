@@ -34,6 +34,13 @@ from .engine import evaluate_policy
 _DECISION_TYPE_TO_ACTION: dict[str, tuple[str, bool]] = {
     "RECOMMEND_RETRY_PROMPT": ("CUSTOMER_RETRY_PROMPT", False),
     "RECOMMEND_CAPTURE": ("CAPTURE_PAYMENT", True),
+    # moves_money=False for both: neither makes any external call at all.
+    # They are still policy-gated rather than bypassing Policy, so that
+    # every intervention the system takes carries a recorded
+    # POLICY_EVALUATED audit entry -- including the ones that cannot move
+    # money. An unaudited "safe" path would be a hole in the audit trail.
+    "RECOMMEND_ESCALATION": ("ESCALATE_TO_MERCHANT", False),
+    "RECOMMEND_STOP": ("STOP_RECOVERY", False),
 }
 
 

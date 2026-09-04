@@ -65,12 +65,19 @@ class DecisionType(str, Enum):
     RECOMMEND_RETRY_PROMPT = "RECOMMEND_RETRY_PROMPT"
     RECOMMEND_CAPTURE = "RECOMMEND_CAPTURE"
     RECOMMEND_MERCHANT_ACTION = "RECOMMEND_MERCHANT_ACTION"
+    RECOMMEND_ESCALATION = "RECOMMEND_ESCALATION"
+    RECOMMEND_STOP = "RECOMMEND_STOP"
     NO_ACTION = "NO_ACTION"
 
 
 class ActionType(str, Enum):
     CUSTOMER_RETRY_PROMPT = "CUSTOMER_RETRY_PROMPT"
     CAPTURE_PAYMENT = "CAPTURE_PAYMENT"
+    # Internal-only interventions: neither makes an external API call and
+    # neither can move money. They are real, audited, terminal outcomes --
+    # not placeholders for an unimplemented external call.
+    ESCALATE_TO_MERCHANT = "ESCALATE_TO_MERCHANT"
+    STOP_RECOVERY = "STOP_RECOVERY"
 
 
 class ActionStatus(str, Enum):
@@ -91,6 +98,7 @@ class ActionStatus(str, Enum):
 class AuditCheckpoint(str, Enum):
     EVENT_INGESTED = "EVENT_INGESTED"
     RECONCILIATION_ANOMALY = "RECONCILIATION_ANOMALY"
+    AI_DIAGNOSIS_RECORDED = "AI_DIAGNOSIS_RECORDED"
     DECISION_CREATED = "DECISION_CREATED"
     POLICY_EVALUATED = "POLICY_EVALUATED"
     ACTION_BLOCKED = "ACTION_BLOCKED"
@@ -276,3 +284,84 @@ class AuditEntry(BaseModel):
     event_id: str | None = None
     decision_id: str | None = None
     action_id: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Diagnosis (AI layer)
+# ---------------------------------------------------------------------------
+
+class FailureClass(str, Enum):
+    """How recoverable the failure is. This -- not a free-text opinion --
+    is what the deterministic intervention mapping actually branches on."""
+
+    TRANSIENT = "TRANSIENT"    # the same payment path is likely to work if tried again
+    TERMINAL = "TERMINAL"      # the same payment path will not work again; retrying is waste
+    AMBIGUOUS = "AMBIGUOUS"    # genuinely undetermined from the available signals
+
+
+class RootCause(str, Enum):
+    """A closed set. The model must pick one of these -- it cannot invent a
+    category, because an unrecognised value would have no defined mapping to
+    an intervention and would therefore have to be treated as AMBIGUOUS
+    anyway. Keeping the set closed makes that failure mode impossible rather
+    than merely handled."""
+
+    ISSUER_DECLINE_TEMPORARY = "ISSUER_DECLINE_TEMPORARY"
+    ISSUER_DECLINE_PERMANENT = "ISSUER_DECLINE_PERMANENT"
+    INSUFFICIENT_FUNDS = "INSUFFICIENT_FUNDS"
+    AUTHENTICATION_FAILED = "AUTHENTICATION_FAILED"
+    INSTRUMENT_INVALID = "INSTRUMENT_INVALID"
+    INSTRUMENT_BLOCKED_FOR_ONLINE = "INSTRUMENT_BLOCKED_FOR_ONLINE"
+    GATEWAY_OR_NETWORK_ERROR = "GATEWAY_OR_NETWORK_ERROR"
+    CUSTOMER_ABANDONED = "CUSTOMER_ABANDONED"
+    RISK_OR_FRAUD_BLOCK = "RISK_OR_FRAUD_BLOCK"
+    UNKNOWN = "UNKNOWN"
+
+
+class Diagnosis(BaseModel):
+    """A model-produced classification of WHY a payment failed.
+
+    DELIBERATE OMISSION -- there is no amount, no currency, and no
+    money-movement field anywhere in this contract, and the prompt that
+    produces it is never shown the amount (see
+    intelligence/ai_diagnosis.py). The model classifies a failure; it does
+    not decide whether money moves, how much, or whether a limit is
+    exceeded. Those are Policy's exclusive concern, evaluated from the
+    persisted RAW amount. A model that wanted to authorise a large capture
+    has no field in which to say so and no input telling it an amount is
+    large.
+
+    confidence is the model's own stated confidence in the classification.
+    It is used by the deterministic mapping ONLY to route low-confidence
+    diagnoses to human escalation -- never to widen a policy limit.
+    """
+
+    root_cause: RootCause
+    failure_class: FailureClass
+    retry_advisable: bool
+    confidence: float = Field(ge=0.0, le=1.0)
+    rationale: str = Field(max_length=400)
+    model_version: str
+
+    def to_provenanced_fields(self, source: str) -> list[ProvenancedField]:
+        """Render this diagnosis as AI_OUTPUT-banded context fields.
+
+        Every field carries confidence and model_version, so ProvenancedField's
+        own validator enforces the AI_OUTPUT contract on each one -- a
+        diagnosis cannot enter a ContextSnapshot stripped of its provenance.
+        """
+        return [
+            ProvenancedField(
+                field=name,
+                value=value,
+                band=ProvenanceBand.AI_OUTPUT,
+                source=source,
+                confidence=self.confidence,
+                model_version=self.model_version,
+            )
+            for name, value in (
+                ("diagnosed_root_cause", self.root_cause.value),
+                ("diagnosed_failure_class", self.failure_class.value),
+                ("diagnosed_retry_advisable", self.retry_advisable),
+            )
+        ]

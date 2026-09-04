@@ -1,0 +1,510 @@
+{
+  "corpus_version": "failure_corpus_v1",
+  "generated_on": "2026-09-04",
+  "what_this_is": [
+    "A corpus of Razorpay payment-failure evidence, each entry carrying two independent things:",
+    "  ground_truth.failure_class -- a human label derived from Razorpay's documented error taxonomy",
+    "                                plus the plain meaning of the issuer's description.",
+    "  classification            -- Claude Opus 5's output, produced from the evidence fields ONLY.",
+    "The classifier was shown error_code, error_source, error_step, error_reason, error_description,",
+    "method and bank. It was NOT shown the amount, and it was NOT shown ground_truth."
+  ],
+  "honest_limitations": [
+    "This is a single-author corpus of modest size. The ground-truth labels and the evidence text were",
+    "written by the same project, so agreement between the classifier and the labels is NOT an",
+    "independent benchmark and should not be quoted as one. What it does support is a narrower and",
+    "still useful claim: that error_reason alone is insufficient to choose an intervention, because",
+    "the corpus contains error_reason values that map to different failure classes depending on the",
+    "description. That claim is checkable by inspection -- see collision_note below.",
+    "Descriptions are representative of real issuer wording, not verbatim captures from production."
+  ],
+  "collision_note": [
+    "'payment_failed' is Razorpay's catch-all reason and appears below with a temporary bank outage, a",
+    "stolen-card block, and a genuinely uninformative message -- TRANSIENT, TERMINAL and AMBIGUOUS",
+    "respectively. 'authentication_failed' and 'network_error' collide the same way. Any classifier",
+    "keyed on error_reason alone must therefore get some of these wrong, whatever mapping it picks.",
+    "That is the specific gap the language model closes, and evaluation/diagnosis_harness.py measures it."
+  ],
+  "entries": [
+    {
+      "id": "insufficient_funds_plain",
+      "evidence": {
+        "error_code": "BAD_REQUEST_ERROR",
+        "error_source": "customer",
+        "error_step": "payment_authorization",
+        "error_reason": "insufficient_funds",
+        "error_description": "Your payment could not be completed as there were insufficient funds in your account.",
+        "method": "card",
+        "bank": "HDFC"
+      },
+      "ground_truth": { "failure_class": "TRANSIENT" },
+      "classification": {
+        "root_cause": "INSUFFICIENT_FUNDS",
+        "failure_class": "TRANSIENT",
+        "retry_advisable": true,
+        "confidence": 0.93,
+        "rationale": "The account simply lacked balance at the time; the customer can top up and the same card will work."
+      }
+    },
+    {
+      "id": "insufficient_funds_upi_limit",
+      "evidence": {
+        "error_code": "BAD_REQUEST_ERROR",
+        "error_source": "customer",
+        "error_step": "payment_authorization",
+        "error_reason": "insufficient_funds",
+        "error_description": "Transaction declined as it exceeds the per-transaction limit set on this UPI account.",
+        "method": "upi",
+        "bank": null
+      },
+      "ground_truth": { "failure_class": "TRANSIENT" },
+      "classification": {
+        "root_cause": "ISSUER_DECLINE_TEMPORARY",
+        "failure_class": "TRANSIENT",
+        "retry_advisable": true,
+        "confidence": 0.78,
+        "rationale": "A per-transaction cap, not a lack of funds; the customer can raise the limit or split the payment."
+      }
+    },
+    {
+      "id": "issuer_down_maintenance",
+      "evidence": {
+        "error_code": "GATEWAY_ERROR",
+        "error_source": "bank",
+        "error_step": "payment_authorization",
+        "error_reason": "issuer_down",
+        "error_description": "Payment processing failed because the issuing bank was temporarily unavailable.",
+        "method": "netbanking",
+        "bank": "SBIN"
+      },
+      "ground_truth": { "failure_class": "TRANSIENT" },
+      "classification": {
+        "root_cause": "ISSUER_DECLINE_TEMPORARY",
+        "failure_class": "TRANSIENT",
+        "retry_advisable": true,
+        "confidence": 0.95,
+        "rationale": "Explicit bank-side unavailability; nothing is wrong with the customer's instrument."
+      }
+    },
+    {
+      "id": "gateway_timeout",
+      "evidence": {
+        "error_code": "GATEWAY_ERROR",
+        "error_source": "gateway",
+        "error_step": "payment_initiation",
+        "error_reason": "gateway_technical_error",
+        "error_description": "The payment gateway timed out while processing this transaction. No amount was debited.",
+        "method": "upi",
+        "bank": null
+      },
+      "ground_truth": { "failure_class": "TRANSIENT" },
+      "classification": {
+        "root_cause": "GATEWAY_OR_NETWORK_ERROR",
+        "failure_class": "TRANSIENT",
+        "retry_advisable": true,
+        "confidence": 0.94,
+        "rationale": "A gateway-side timeout with no debit; the same instrument should work on a retry."
+      }
+    },
+    {
+      "id": "customer_cancelled",
+      "evidence": {
+        "error_code": "BAD_REQUEST_ERROR",
+        "error_source": "customer",
+        "error_step": "payment_authentication",
+        "error_reason": "payment_cancelled",
+        "error_description": "The customer cancelled the payment before completing authentication.",
+        "method": "card",
+        "bank": "ICIC"
+      },
+      "ground_truth": { "failure_class": "TERMINAL" },
+      "classification": {
+        "root_cause": "CUSTOMER_ABANDONED",
+        "failure_class": "TERMINAL",
+        "retry_advisable": false,
+        "confidence": 0.88,
+        "rationale": "The customer chose not to proceed; nothing is wrong with the instrument, so re-charging is not the intervention."
+      }
+    },
+    {
+      "id": "card_expired",
+      "evidence": {
+        "error_code": "BAD_REQUEST_ERROR",
+        "error_source": "issuer",
+        "error_step": "payment_authorization",
+        "error_reason": "card_expired",
+        "error_description": "The card used for this payment has expired.",
+        "method": "card",
+        "bank": "AXIS"
+      },
+      "ground_truth": { "failure_class": "TERMINAL" },
+      "classification": {
+        "root_cause": "INSTRUMENT_INVALID",
+        "failure_class": "TERMINAL",
+        "retry_advisable": false,
+        "confidence": 0.97,
+        "rationale": "An expired card cannot start working again; recovery requires a new instrument from the customer."
+      }
+    },
+    {
+      "id": "card_blocked_online",
+      "evidence": {
+        "error_code": "BAD_REQUEST_ERROR",
+        "error_source": "issuer",
+        "error_step": "payment_authorization",
+        "error_reason": "card_blocked",
+        "error_description": "This card is blocked for online transactions. Please contact your bank to enable them.",
+        "method": "card",
+        "bank": "KKBK"
+      },
+      "ground_truth": { "failure_class": "TERMINAL" },
+      "classification": {
+        "root_cause": "INSTRUMENT_BLOCKED_FOR_ONLINE",
+        "failure_class": "TERMINAL",
+        "retry_advisable": false,
+        "confidence": 0.95,
+        "rationale": "Online use is disabled on this card; retrying will decline identically until the customer calls their bank."
+      }
+    },
+    {
+      "id": "otp_incorrect_thrice",
+      "evidence": {
+        "error_code": "BAD_REQUEST_ERROR",
+        "error_source": "customer",
+        "error_step": "payment_authentication",
+        "error_reason": "authentication_failed",
+        "error_description": "The one-time password was entered incorrectly three times.",
+        "method": "card",
+        "bank": "HDFC"
+      },
+      "ground_truth": { "failure_class": "TRANSIENT" },
+      "classification": {
+        "root_cause": "AUTHENTICATION_FAILED",
+        "failure_class": "TRANSIENT",
+        "retry_advisable": true,
+        "confidence": 0.82,
+        "rationale": "A mistyped OTP is a recoverable user error; the card itself is fine and a fresh attempt can succeed."
+      }
+    },
+    {
+      "id": "authentication_permanently_disabled",
+      "evidence": {
+        "error_code": "BAD_REQUEST_ERROR",
+        "error_source": "issuer",
+        "error_step": "payment_authentication",
+        "error_reason": "authentication_failed",
+        "error_description": "3D Secure is not enabled on this card and the issuer does not support online authentication for it.",
+        "method": "card",
+        "bank": "PUNB"
+      },
+      "ground_truth": { "failure_class": "TERMINAL" },
+      "classification": {
+        "root_cause": "INSTRUMENT_BLOCKED_FOR_ONLINE",
+        "failure_class": "TERMINAL",
+        "retry_advisable": false,
+        "confidence": 0.89,
+        "rationale": "The issuer cannot authenticate this card online at all, so every retry on the same rails will fail the same way."
+      }
+    },
+    {
+      "id": "risk_threshold",
+      "evidence": {
+        "error_code": "BAD_REQUEST_ERROR",
+        "error_source": "business",
+        "error_step": "payment_authorization",
+        "error_reason": "risk_threshold_exceeded",
+        "error_description": "This transaction was declined by the risk engine as it exceeded the configured threshold.",
+        "method": "card",
+        "bank": null
+      },
+      "ground_truth": { "failure_class": "TERMINAL" },
+      "classification": {
+        "root_cause": "RISK_OR_FRAUD_BLOCK",
+        "failure_class": "TERMINAL",
+        "retry_advisable": false,
+        "confidence": 0.91,
+        "rationale": "A risk decline must never be retried automatically; re-attempting a blocked transaction is exactly the wrong behaviour."
+      }
+    },
+    {
+      "id": "network_error_confirming",
+      "evidence": {
+        "error_code": "GATEWAY_ERROR",
+        "error_source": "bank",
+        "error_step": "payment_response",
+        "error_reason": "network_error",
+        "error_description": "A network error occurred while confirming this payment with the bank.",
+        "method": "upi",
+        "bank": null
+      },
+      "ground_truth": { "failure_class": "TRANSIENT" },
+      "classification": {
+        "root_cause": "GATEWAY_OR_NETWORK_ERROR",
+        "failure_class": "TRANSIENT",
+        "retry_advisable": true,
+        "confidence": 0.9,
+        "rationale": "A transport failure during confirmation, unrelated to the instrument's validity."
+      }
+    },
+    {
+      "id": "network_error_account_closed",
+      "evidence": {
+        "error_code": "GATEWAY_ERROR",
+        "error_source": "bank",
+        "error_step": "payment_response",
+        "error_reason": "network_error",
+        "error_description": "The bank returned: account closed. No further transactions are permitted on this account.",
+        "method": "netbanking",
+        "bank": "BARB"
+      },
+      "ground_truth": { "failure_class": "TERMINAL" },
+      "classification": {
+        "root_cause": "ISSUER_DECLINE_PERMANENT",
+        "failure_class": "TERMINAL",
+        "retry_advisable": false,
+        "confidence": 0.94,
+        "rationale": "The description reports a closed account despite the generic network_error reason; no retry can succeed."
+      }
+    },
+    {
+      "id": "invalid_card_number",
+      "evidence": {
+        "error_code": "BAD_REQUEST_ERROR",
+        "error_source": "customer",
+        "error_step": "payment_initiation",
+        "error_reason": "invalid_card",
+        "error_description": "The card number entered is not valid.",
+        "method": "card",
+        "bank": null
+      },
+      "ground_truth": { "failure_class": "TERMINAL" },
+      "classification": {
+        "root_cause": "INSTRUMENT_INVALID",
+        "failure_class": "TERMINAL",
+        "retry_advisable": false,
+        "confidence": 0.86,
+        "rationale": "The instrument details are invalid as entered; the customer must supply different details."
+      }
+    },
+    {
+      "id": "payment_failed_bank_outage",
+      "evidence": {
+        "error_code": "BAD_REQUEST_ERROR",
+        "error_source": "bank",
+        "error_step": "payment_authorization",
+        "error_reason": "payment_failed",
+        "error_description": "The issuing bank is currently experiencing an outage. Please try again after some time.",
+        "method": "card",
+        "bank": "SBIN"
+      },
+      "ground_truth": { "failure_class": "TRANSIENT" },
+      "classification": {
+        "root_cause": "ISSUER_DECLINE_TEMPORARY",
+        "failure_class": "TRANSIENT",
+        "retry_advisable": true,
+        "confidence": 0.92,
+        "rationale": "The description states an outage and explicitly invites a later retry, despite the generic reason code."
+      }
+    },
+    {
+      "id": "payment_failed_stolen_card",
+      "evidence": {
+        "error_code": "BAD_REQUEST_ERROR",
+        "error_source": "issuer",
+        "error_step": "payment_authorization",
+        "error_reason": "payment_failed",
+        "error_description": "Transaction declined. The card has been reported lost or stolen.",
+        "method": "card",
+        "bank": "ICIC"
+      },
+      "ground_truth": { "failure_class": "TERMINAL" },
+      "classification": {
+        "root_cause": "RISK_OR_FRAUD_BLOCK",
+        "failure_class": "TERMINAL",
+        "retry_advisable": false,
+        "confidence": 0.96,
+        "rationale": "A lost/stolen report is permanent and security-sensitive; retrying it automatically would be actively harmful."
+      }
+    },
+    {
+      "id": "payment_failed_uninformative",
+      "evidence": {
+        "error_code": "BAD_REQUEST_ERROR",
+        "error_source": "bank",
+        "error_step": "payment_authorization",
+        "error_reason": "payment_failed",
+        "error_description": "Payment failed.",
+        "method": "card",
+        "bank": "PUNB"
+      },
+      "ground_truth": { "failure_class": "AMBIGUOUS" },
+      "classification": {
+        "root_cause": "UNKNOWN",
+        "failure_class": "AMBIGUOUS",
+        "retry_advisable": false,
+        "confidence": 0.34,
+        "rationale": "The message carries no information distinguishing a temporary decline from a permanent one; a human should decide."
+      }
+    },
+    {
+      "id": "payment_failed_do_not_honour",
+      "evidence": {
+        "error_code": "BAD_REQUEST_ERROR",
+        "error_source": "issuer",
+        "error_step": "payment_authorization",
+        "error_reason": "payment_failed",
+        "error_description": "Do not honour.",
+        "method": "card",
+        "bank": "AXIS"
+      },
+      "ground_truth": { "failure_class": "AMBIGUOUS" },
+      "classification": {
+        "root_cause": "UNKNOWN",
+        "failure_class": "AMBIGUOUS",
+        "retry_advisable": false,
+        "confidence": 0.41,
+        "rationale": "'Do not honour' is the issuer's generic refusal and covers both temporary and permanent causes; it cannot be resolved from this evidence."
+      }
+    },
+    {
+      "id": "wallet_insufficient",
+      "evidence": {
+        "error_code": "BAD_REQUEST_ERROR",
+        "error_source": "customer",
+        "error_step": "payment_authorization",
+        "error_reason": "insufficient_funds",
+        "error_description": "Wallet balance is too low to complete this payment.",
+        "method": "wallet",
+        "bank": null
+      },
+      "ground_truth": { "failure_class": "TRANSIENT" },
+      "classification": {
+        "root_cause": "INSUFFICIENT_FUNDS",
+        "failure_class": "TRANSIENT",
+        "retry_advisable": true,
+        "confidence": 0.9,
+        "rationale": "A wallet can be topped up; this is the same recoverable shape as a low bank balance."
+      }
+    },
+    {
+      "id": "upi_collect_expired",
+      "evidence": {
+        "error_code": "BAD_REQUEST_ERROR",
+        "error_source": "customer",
+        "error_step": "payment_authentication",
+        "error_reason": "payment_cancelled",
+        "error_description": "The UPI collect request expired without the customer approving it.",
+        "method": "upi",
+        "bank": null
+      },
+      "ground_truth": { "failure_class": "TRANSIENT" },
+      "classification": {
+        "root_cause": "CUSTOMER_ABANDONED",
+        "failure_class": "TRANSIENT",
+        "retry_advisable": true,
+        "confidence": 0.66,
+        "rationale": "An expired collect request may simply have been missed rather than refused, so a fresh request is reasonable -- but intent is genuinely unclear."
+      }
+    },
+    {
+      "id": "issuer_decline_permanent_generic",
+      "evidence": {
+        "error_code": "BAD_REQUEST_ERROR",
+        "error_source": "issuer",
+        "error_step": "payment_authorization",
+        "error_reason": "card_blocked",
+        "error_description": "The card has been permanently blocked by the issuer.",
+        "method": "card",
+        "bank": "BARB"
+      },
+      "ground_truth": { "failure_class": "TERMINAL" },
+      "classification": {
+        "root_cause": "ISSUER_DECLINE_PERMANENT",
+        "failure_class": "TERMINAL",
+        "retry_advisable": false,
+        "confidence": 0.95,
+        "rationale": "A permanent block cannot resolve on its own; recovery requires a different instrument."
+      }
+    },
+    {
+      "id": "gateway_error_unspecified",
+      "evidence": {
+        "error_code": "GATEWAY_ERROR",
+        "error_source": "gateway",
+        "error_step": "payment_authorization",
+        "error_reason": "gateway_technical_error",
+        "error_description": "An unexpected error occurred.",
+        "method": "card",
+        "bank": null
+      },
+      "ground_truth": { "failure_class": "AMBIGUOUS" },
+      "classification": {
+        "root_cause": "UNKNOWN",
+        "failure_class": "AMBIGUOUS",
+        "retry_advisable": false,
+        "confidence": 0.45,
+        "rationale": "Gateway-sourced errors are usually transient, but this message says nothing at all; confidence is too low to automate."
+      }
+    },
+    {
+      "id": "netbanking_session_timeout",
+      "evidence": {
+        "error_code": "GATEWAY_ERROR",
+        "error_source": "bank",
+        "error_step": "payment_authentication",
+        "error_reason": "network_error",
+        "error_description": "The netbanking session timed out before the customer completed the transfer.",
+        "method": "netbanking",
+        "bank": "HDFC"
+      },
+      "ground_truth": { "failure_class": "TRANSIENT" },
+      "classification": {
+        "root_cause": "GATEWAY_OR_NETWORK_ERROR",
+        "failure_class": "TRANSIENT",
+        "retry_advisable": true,
+        "confidence": 0.87,
+        "rationale": "A session timeout is a process failure, not an instrument failure; a fresh attempt is likely to complete."
+      }
+    },
+    {
+      "id": "international_card_not_supported",
+      "evidence": {
+        "error_code": "BAD_REQUEST_ERROR",
+        "error_source": "business",
+        "error_step": "payment_initiation",
+        "error_reason": "invalid_card",
+        "error_description": "International cards are not enabled on this merchant account.",
+        "method": "card",
+        "bank": null
+      },
+      "ground_truth": { "failure_class": "TERMINAL" },
+      "classification": {
+        "root_cause": "ISSUER_DECLINE_PERMANENT",
+        "failure_class": "TERMINAL",
+        "retry_advisable": false,
+        "confidence": 0.88,
+        "rationale": "A merchant-side configuration limit; retrying the same card changes nothing until the merchant enables international payments."
+      }
+    },
+    {
+      "id": "issuer_down_retry_later",
+      "evidence": {
+        "error_code": "GATEWAY_ERROR",
+        "error_source": "bank",
+        "error_step": "payment_authorization",
+        "error_reason": "issuer_down",
+        "error_description": "The bank's authorization server did not respond. Please retry in a few minutes.",
+        "method": "card",
+        "bank": "KKBK"
+      },
+      "ground_truth": { "failure_class": "TRANSIENT" },
+      "classification": {
+        "root_cause": "ISSUER_DECLINE_TEMPORARY",
+        "failure_class": "TRANSIENT",
+        "retry_advisable": true,
+        "confidence": 0.93,
+        "rationale": "An unresponsive authorization server with an explicit retry hint; the instrument is untested rather than refused."
+      }
+    }
+  ]
+}

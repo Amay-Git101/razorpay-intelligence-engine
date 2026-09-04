@@ -580,10 +580,25 @@ def test_production_modules_never_import_pipeline():
 _ALLOWED_API_REPOSITORY_READS = {
     "merchants": {"get_merchant", "list_merchants"},
     "orders": {"get_order", "list_orders_for_merchant"},
-    "payment_attempts": {"list_payment_attempts_for_order"},
+    # get_payment_attempt added with the guided-journey gate: the
+    # customer-history endpoint needs one payment's stored Razorpay object to
+    # find the payer. Read-only; insert_payment_attempt and
+    # update_payment_attempt_status remain forbidden here.
+    "payment_attempts": {"list_payment_attempts_for_order", "get_payment_attempt"},
     "decisions": {"list_decisions_for_order"},
     "actions": {"get_action_for_decision"},
     "audit": {"list_audit_trail"},
+    # Batch reads added with the revenue-recovery gate. Both are read-only
+    # projections; the batch-executing functions (insert_batch,
+    # link_item_decision, finalize_batch) are deliberately NOT allowed here.
+    "recovery_batches": {"list_batch_items_with_outcomes", "list_batches_for_merchant", "list_recent_batches"},
+    # Cohort reads added with the guided-journey gate. insert_experiment and
+    # insert_experiment_order are deliberately NOT allowed: the API creates a
+    # cohort only by calling provisioning.test_orders.create_test_orders,
+    # which is the one place that also creates the real Razorpay orders the
+    # cohort rows are supposed to point at. Letting the delivery layer write
+    # cohort rows directly would allow a cohort of orders that do not exist.
+    "payment_experiments": {"get_experiment", "list_experiment_orders_with_state"},
 }
 
 
@@ -724,13 +739,43 @@ def test_frontend_never_accesses_postgres_directly():
     assert offenders == [], f"apps/web/ must never access PostgreSQL directly: {offenders}"
 
 
-def test_frontend_never_calls_razorpay_directly():
+def test_frontend_never_calls_the_razorpay_rest_api():
+    """REPLACES an earlier rule that forbade the frontend any contact with
+    a Razorpay domain at all.
+
+    That rule was written when this project had no Checkout integration and
+    the frontend genuinely needed none. Real Razorpay Checkout runs in the
+    browser by design -- it is loaded from Razorpay's own domain and takes
+    the PUBLISHABLE key -- so keeping the old rule would have meant either
+    no real payment step or a hand-drawn imitation of Razorpay's payment
+    form, and the second of those is far worse than what the rule was
+    protecting against.
+
+    What actually needed protecting is narrower and is now enforced
+    directly: the browser must never reach Razorpay's server REST API,
+    which is the interface that takes the secret. checkout.razorpay.com is
+    permitted; api.razorpay.com is not. The companion tests in
+    test_frontend.py additionally forbid any hardcoded key and any secret
+    in the bundle, so the surface this covers is strictly larger than the
+    rule it replaces.
+    """
     offenders = []
     for path in _all_web_files():
         text = path.read_text(encoding="utf-8").lower()
-        if "api.razorpay.com" in text or "checkout.razorpay.com" in text:
+        if "api.razorpay.com" in text:
             offenders.append(str(path.relative_to(WEB_ROOT)))
-    assert offenders == [], f"apps/web/ must talk only to the existing backend API, never Razorpay directly: {offenders}"
+    assert offenders == [], f"apps/web/ must never call Razorpay's server REST API: {offenders}"
+
+
+def test_frontend_takes_the_publishable_key_from_the_server():
+    """The key reaches the browser only from /checkout-config, which is the
+    one place that can refuse to serve a live key. A key literal anywhere
+    in the bundle would route around that refusal."""
+    offenders = []
+    for path in _all_web_files():
+        for match in re.finditer(r"rzp_(test|live)_\w+", path.read_text(encoding="utf-8")):
+            offenders.append(f"{path.relative_to(WEB_ROOT)}: {match.group(0)}")
+    assert offenders == [], f"a Razorpay key is hardcoded in apps/web/: {offenders}"
 
 
 def test_frontend_does_not_duplicate_policy_or_engine_business_rules():
@@ -759,3 +804,168 @@ def test_only_api_app_mounts_the_static_frontend():
         if "StaticFiles" in text:
             offenders.append(str(path.relative_to(SRC_ROOT)))
     assert offenders == [], f"only api/app.py may mount the static frontend: {offenders}"
+
+
+# ---------------------------------------------------------------------------
+# AI layer containment
+#
+# The safety argument for this project is that a language model informs a
+# decision but never carries authority. That is an architectural claim, so it
+# is checked architecturally: the modules that hold authority must not be able
+# to see the model at all.
+# ---------------------------------------------------------------------------
+
+_AUTHORITY_PACKAGES = ("policy", "action", "verification", "repository")
+
+
+def test_authority_holding_packages_never_import_the_diagnosis_layer():
+    """Policy decides whether money moves, Action moves it, Verification
+    confirms it, and Repository persists it. None of them may import the AI
+    layer -- if one did, a model output could reach a money decision without
+    passing through the deterministic engine that is supposed to mediate it."""
+    offenders = []
+    for package in _AUTHORITY_PACKAGES:
+        for path in _all_py_files(SRC_ROOT / package):
+            text = path.read_text(encoding="utf-8")
+            if re.search(r"^\s*(from|import)\s+diagnosis\b", text, re.MULTILINE):
+                offenders.append(f"{path.relative_to(SRC_ROOT)}")
+    assert offenders == [], f"authority-holding packages must not import diagnosis/: {offenders}"
+
+
+def test_authority_holding_packages_never_import_an_llm_sdk():
+    offenders = []
+    for package in _AUTHORITY_PACKAGES:
+        for path in _all_py_files(SRC_ROOT / package):
+            text = path.read_text(encoding="utf-8")
+            if re.search(r"^\s*(from|import)\s+anthropic\b", text, re.MULTILINE):
+                offenders.append(f"{path.relative_to(SRC_ROOT)}")
+    assert offenders == [], f"authority-holding packages must not import an LLM SDK: {offenders}"
+
+
+def test_diagnosis_layer_touches_no_database_and_no_razorpay_client():
+    """The AI layer is a pure classifier over a projected struct. It cannot
+    read the database, so it cannot widen its own inputs beyond the
+    allowlist; and it cannot reach Razorpay, so it cannot act."""
+    offenders = []
+    for path in _all_py_files(SRC_ROOT / "diagnosis"):
+        text = path.read_text(encoding="utf-8")
+        for forbidden in ("psycopg", "repository", "razorpay_client", "razorpay_write_client"):
+            if re.search(rf"^\s*(from|import)\s+{forbidden}\b", text, re.MULTILINE):
+                offenders.append(f"{path.relative_to(SRC_ROOT)}: {forbidden}")
+    assert offenders == [], f"diagnosis/ must stay pure: {offenders}"
+
+
+def test_risk_detection_uses_no_model():
+    """Detection is deterministic by design -- whether revenue is at risk is
+    a fact about observed state, not a judgement. A model appearing here
+    would add cost and a failure mode without adding information."""
+    offenders = []
+    for path in _all_py_files(SRC_ROOT / "risk"):
+        text = path.read_text(encoding="utf-8")
+        for forbidden in ("anthropic", "diagnosis"):
+            if re.search(rf"^\s*(from|import)\s+{forbidden}\b", text, re.MULTILINE):
+                offenders.append(f"{path.relative_to(SRC_ROOT)}: {forbidden}")
+    assert offenders == [], f"risk/ must stay deterministic: {offenders}"
+
+
+def test_only_the_diagnosis_package_imports_the_llm_sdk():
+    """Exactly one module in the codebase may talk to a model. Anything else
+    importing the SDK is a second, unreviewed path to it."""
+    offenders = []
+    for path in _all_py_files(SRC_ROOT):
+        if path.parent.name == "diagnosis":
+            continue
+        text = path.read_text(encoding="utf-8")
+        if re.search(r"^\s*(from|import)\s+anthropic\b", text, re.MULTILINE):
+            offenders.append(str(path.relative_to(SRC_ROOT)))
+    assert offenders == [], f"only diagnosis/ may import the Anthropic SDK: {offenders}"
+
+
+def test_the_seeder_can_only_produce_failed_payments():
+    """Synthetic payments are only ever 'failed', which is what makes the
+    synthetic batch provably free of external calls: no failed payment can
+    reach the Razorpay write path. A seeder that could emit 'authorized'
+    would be able to trigger a capture against a payment id that does not
+    exist at Razorpay."""
+    text = (SRC_ROOT / "seed" / "synthetic_backlog.py").read_text(encoding="utf-8")
+    assert '"authorized"' not in text
+    assert '"captured"' not in text
+    assert text.count('status="failed"') >= 1
+
+
+# ---------------------------------------------------------------------------
+# provisioning/ (real Razorpay order creation)
+# ---------------------------------------------------------------------------
+
+
+def test_only_provisioning_and_api_reference_the_order_client():
+    """Order creation is a real Razorpay write, even though it moves no
+    money. It gets the same containment treatment as the capture adapter:
+    one module defines it, one layer constructs it, and nothing else may
+    reach it."""
+    offenders = []
+    for path in _all_py_files(SRC_ROOT):
+        if _top_level_package(path) in ("provisioning", "api"):
+            continue
+        text = path.read_text(encoding="utf-8")
+        if "razorpay_order_client" in text:
+            offenders.append(str(path.relative_to(SRC_ROOT)))
+    assert offenders == [], f"the order client is reachable from outside provisioning//api: {offenders}"
+
+
+def test_provisioning_cannot_move_money():
+    """The package that creates orders must not be able to capture one.
+    Creating a request for payment and taking the money are different
+    authorities and they stay in different packages."""
+    offenders = []
+    for path in _all_py_files(SRC_ROOT / "provisioning"):
+        text = path.read_text(encoding="utf-8")
+        if "razorpay_write_client" in text:
+            offenders.append(f"{path.relative_to(SRC_ROOT)}: capture adapter import")
+        if _CAPTURE_PAYMENT_CALL_PATTERN.search(text):
+            offenders.append(f"{path.relative_to(SRC_ROOT)}: direct capture_payment() call")
+    assert offenders == [], f"src/provisioning/ must not touch the money-moving path: {offenders}"
+
+
+def test_the_order_client_posts_only_to_the_orders_endpoint():
+    """One capability, checked in the source rather than trusted from the
+    class name: the only path this adapter POSTs to is /orders."""
+    text = (SRC_ROOT / "provisioning" / "razorpay_order_client.py").read_text(encoding="utf-8")
+    posted_paths = re.findall(r"_client\.post\(\s*[\"']([^\"']+)[\"']", text)
+    assert posted_paths == ["/orders"], f"unexpected Razorpay write paths: {posted_paths}"
+
+
+def test_order_creation_always_requests_manual_capture():
+    """payment_capture is pinned to a module constant rather than passed in
+    by a caller, so no call site can create an auto-capturing order and
+    remove the decision this whole system exists to make."""
+    text = (SRC_ROOT / "provisioning" / "razorpay_order_client.py").read_text(encoding="utf-8")
+    assert "MANUAL_CAPTURE = 0" in text
+    assert '"payment_capture": MANUAL_CAPTURE' in text
+
+
+# ---------------------------------------------------------------------------
+# risk/failure_patterns.py and context/customer_history.py are read-only
+# ---------------------------------------------------------------------------
+
+
+def test_failure_pattern_analysis_never_writes():
+    """It reports on observed payments. A module that could also change
+    them could make its own conclusions come true."""
+    text = (SRC_ROOT / "risk" / "failure_patterns.py").read_text(encoding="utf-8")
+    assert not _MUTATION_SQL_PATTERN.search(text), "failure_patterns.py must be read-only"
+
+
+def test_customer_history_never_writes_and_never_calls_out():
+    text = (SRC_ROOT / "context" / "customer_history.py").read_text(encoding="utf-8")
+    assert not _MUTATION_SQL_PATTERN.search(text), "customer_history.py must be read-only"
+    for forbidden in ("razorpay_client", "razorpay_order_client", "anthropic", "httpx"):
+        assert forbidden not in text, f"customer_history.py must not reach {forbidden}"
+
+
+def test_customer_history_does_not_put_the_raw_identity_in_the_context():
+    """The persisted context carries counts and a fingerprint. The address
+    itself stays in the payment row it already lived in."""
+    text = (SRC_ROOT / "context" / "builder.py").read_text(encoding="utf-8")
+    assert "identity_fingerprint" in text
+    assert "customer_email" not in text

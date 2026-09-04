@@ -7,6 +7,8 @@
     GET  /orders/{order_id}
     GET  /orders/{order_id}/timeline
     POST /merchants/{merchant_id}/orders/{order_id}/reconcile
+    GET  /merchants/{merchant_id}/recovery-batches
+    GET  /recovery-batches/{batch_id}
     POST /decision-lab/simulate
 
 Run locally with:
@@ -41,6 +43,7 @@ string -- never a raw exception, traceback, or object repr().
 
 from __future__ import annotations
 
+import os
 import uuid as uuid_module
 from pathlib import Path
 from typing import Any, Iterator
@@ -51,6 +54,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from db.connection import get_connection
+from observability.batch_ledger import build_batch_ledger
 from observability.metrics import (
     capture_terminal_status_distribution,
     decision_type_distribution,
@@ -61,8 +65,12 @@ from observability.metrics import (
     verification_resolution_timing,
     verified_captured_amount,
 )
+from context.customer_history import summarize_customer_history
 from pipeline.orchestration import UnresolvedEventError, run_reconciliation_pipeline
 from pipeline.simulation import simulate_decision
+from provisioning.razorpay_order_client import RazorpayOrderClient
+from provisioning.test_orders import create_test_orders
+from risk.failure_patterns import FailurePatternReport, analyze_experiment, analyze_recent_payments
 from razorpay_client.client import RazorpayReadClient
 from razorpay_client.errors import RazorpayAPIError
 from repository.actions import get_action_for_decision
@@ -70,10 +78,34 @@ from repository.audit import list_audit_trail
 from repository.decisions import list_decisions_for_order
 from repository.merchants import get_merchant, list_merchants
 from repository.orders import get_order, list_orders_for_merchant
-from repository.payment_attempts import list_payment_attempts_for_order
+from repository.payment_attempts import get_payment_attempt, list_payment_attempts_for_order
+from repository.payment_experiments import (
+    get_experiment,
+    list_experiment_orders_with_state,
+)
+from repository.recovery_batches import (
+    list_batch_items_with_outcomes,
+    list_batches_for_merchant,
+    list_recent_batches,
+)
 
 from .schemas import (
     ActionSummary,
+    CheckoutConfigResponse,
+    CreateTestOrdersRequest,
+    CreateTestOrdersResponse,
+    CreatedOrderSummary,
+    CustomerHistoryResponse,
+    CustomerHistorySummary,
+    ExperimentDetailResponse,
+    ExperimentOrderState,
+    BatchLedgerResponse,
+    DiagnosisSummary,
+    OutcomeBucketSummary,
+    RecoveryBatchDetailResponse,
+    RecoveryBatchItemSummary,
+    RecoveryBatchListResponse,
+    RecoveryBatchSummary,
     AuditEntrySummary,
     DecisionSummary,
     ErrorResponse,
@@ -343,6 +375,362 @@ def decision_lab_simulate(request: SimulationRequest) -> SimulationResponse:
         ),
         policy=policy,
         policy_skipped_reason=result.policy_skipped_reason,
+    )
+
+
+
+# ---------------------------------------------------------------------------
+# Recovery batches -- READ ONLY, deliberately.
+#
+# There is no POST endpoint that runs a batch. Running one costs money twice
+# over: it calls a language model once per at-risk payment, and on a real
+# (non-synthetic) batch it can move money through Razorpay. Neither belongs
+# behind a button on a public demo page that anyone can click repeatedly.
+#
+# Executing a batch is an operator action and lives in the command-line
+# runner, not here. These endpoints only read what that produced.
+# ---------------------------------------------------------------------------
+
+def _diagnosis_from_context(context_snapshot: dict[str, Any] | None) -> DiagnosisSummary | None:
+    """Recover the model's classification from the persisted AI_OUTPUT fields.
+
+    Reads only fields banded AI_OUTPUT, so a DERIVED or RAW field can never be
+    presented to a client as a model output. Returns None -- not a
+    placeholder -- when the payment was never diagnosed, which is a real and
+    common state (an authorized payment has no failure to explain, and a
+    payment whose diagnosis failed was escalated instead).
+    """
+    if not context_snapshot:
+        return None
+    ai_fields = {
+        f["field"]: f
+        for f in context_snapshot.get("fields", [])
+        if f.get("band") == "AI_OUTPUT"
+    }
+    if "diagnosed_root_cause" not in ai_fields:
+        return None
+    root = ai_fields["diagnosed_root_cause"]
+    return DiagnosisSummary(
+        root_cause=root["value"],
+        failure_class=ai_fields["diagnosed_failure_class"]["value"],
+        retry_advisable=ai_fields["diagnosed_retry_advisable"]["value"],
+        confidence=root["confidence"],
+        model_version=root["model_version"],
+    )
+
+
+@app.get(
+    "/merchants/{merchant_id}/recovery-batches",
+    response_model=RecoveryBatchListResponse,
+    responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+)
+def merchant_recovery_batches(
+    merchant_id: str, conn: psycopg.Connection = Depends(get_db)
+) -> RecoveryBatchListResponse:
+    _require_uuid(merchant_id, "merchant_id")
+    if get_merchant(conn, merchant_id) is None:
+        raise HTTPException(status_code=404, detail="merchant not found")
+
+    batches = [
+        RecoveryBatchSummary(
+            batch_id=str(row["id"]),
+            merchant_id=str(row["merchant_id"]),
+            source=row["source"],
+            money_is_real=row["source"] == "razorpay_test_mode",
+            detected_count=row["detected_count"],
+            revenue_at_risk=row["revenue_at_risk"],
+            created_at=row["created_at"],
+        )
+        for row in list_batches_for_merchant(conn, merchant_id)
+    ]
+    return RecoveryBatchListResponse(merchant_id=merchant_id, batches=batches)
+
+
+@app.get(
+    "/recovery-batches/{batch_id}",
+    response_model=RecoveryBatchDetailResponse,
+    responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+)
+def recovery_batch_detail(
+    batch_id: str, conn: psycopg.Connection = Depends(get_db)
+) -> RecoveryBatchDetailResponse:
+    _require_uuid(batch_id, "batch_id")
+    ledger = build_batch_ledger(conn, batch_id)
+    if ledger is None:
+        raise HTTPException(status_code=404, detail="recovery batch not found")
+
+    items = [
+        RecoveryBatchItemSummary(
+            payment_attempt_id=row["payment_attempt_id"],
+            order_id=row["order_id"],
+            amount_at_risk=row["amount_at_risk"],
+            risk_reason_codes=row["risk_reason_codes"],
+            error_reason=row["error_reason"],
+            error_source=row["error_source"],
+            method=row["method"],
+            diagnosis=_diagnosis_from_context(row["context_snapshot"]),
+            decision_id=str(row["decision_id"]) if row["decision_id"] else None,
+            decision_type=row["decision_type"],
+            decision_reason_codes=row["reason_codes"],
+            action_id=str(row["action_id"]) if row["action_id"] else None,
+            action_type=row["action_type"],
+            action_status=row["action_status"],
+        )
+        for row in list_batch_items_with_outcomes(conn, batch_id)
+    ]
+
+    return RecoveryBatchDetailResponse(
+        ledger=BatchLedgerResponse(
+            batch_id=ledger.batch_id,
+            merchant_id=ledger.merchant_id,
+            source=ledger.source,
+            money_is_real=ledger.money_is_real,
+            detected_count=ledger.detected_count,
+            revenue_at_risk=ledger.revenue_at_risk,
+            at_risk_by_outcome=[
+                OutcomeBucketSummary(category=b.category, count=b.count, amount=b.amount)
+                for b in ledger.at_risk_by_outcome
+            ],
+            verified_recovered_amount=ledger.verified_recovered_amount,
+            verified_recovered_count=ledger.verified_recovered_count,
+            disposition_is_complete=ledger.disposition_is_complete,
+        ),
+        items=items,
+    )
+
+
+@app.get("/recovery-batches", response_model=RecoveryBatchListResponse)
+def recent_recovery_batches(conn: psycopg.Connection = Depends(get_db)) -> RecoveryBatchListResponse:
+    """Most recent batches across every merchant.
+
+    The frontend uses this to find the batches worth displaying without
+    hardcoding a demo merchant id -- a hardcoded identifier would break the
+    moment the database is reseeded, and would make the page a fixture rather
+    than a view over real data.
+    """
+    batches = [
+        RecoveryBatchSummary(
+            batch_id=str(row["id"]),
+            merchant_id=str(row["merchant_id"]),
+            merchant_name=row["merchant_name"],
+            source=row["source"],
+            money_is_real=row["source"] == "razorpay_test_mode",
+            detected_count=row["detected_count"],
+            revenue_at_risk=row["revenue_at_risk"],
+            created_at=row["created_at"],
+        )
+        for row in list_recent_batches(conn, limit=10)
+    ]
+    # merchant_id is per-batch here rather than a single value for the whole
+    # response, so the list-level field is deliberately left empty.
+    return RecoveryBatchListResponse(merchant_id="", batches=batches)
+
+
+# ---------------------------------------------------------------------------
+# Guided problem journeys
+# ---------------------------------------------------------------------------
+
+
+@app.get("/checkout-config", response_model=CheckoutConfigResponse,
+         responses={500: {"model": ErrorResponse}})
+def checkout_config() -> CheckoutConfigResponse:
+    """The publishable Razorpay key the browser needs to open Checkout.
+
+    Two things this endpoint will not do. It never reads
+    RAZORPAY_KEY_SECRET, so there is no code path on which a secret could
+    be serialised into an HTTP response. And it refuses to serve a live
+    key: this build is a Test Mode demonstration, and handing a browser a
+    live key would let a visitor start real payments with real money. A
+    non-test key is treated as a misconfiguration and the endpoint fails
+    closed rather than degrading quietly.
+    """
+    key_id = os.environ.get("RAZORPAY_KEY_ID")
+    if not key_id:
+        raise HTTPException(status_code=500, detail="server is not configured with a Razorpay key id")
+    if not key_id.startswith("rzp_test_"):
+        raise HTTPException(
+            status_code=500,
+            detail="refusing to serve a non-test Razorpay key to the browser",
+        )
+    return CheckoutConfigResponse(key_id=key_id, mode="test")
+
+
+@app.post(
+    "/merchants/{merchant_id}/test-orders",
+    response_model=CreateTestOrdersResponse,
+    responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse},
+               502: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+)
+def create_experiment_orders(
+    merchant_id: str,
+    request: CreateTestOrdersRequest,
+    conn: psycopg.Connection = Depends(get_db),
+) -> CreateTestOrdersResponse:
+    """Creates real Razorpay Test Mode orders and freezes them as a cohort.
+
+    Creating an order moves no money -- it is a request for payment that
+    only a human completing Checkout can act on. The bounds (at most six,
+    positive amount, known experiment kind) live in
+    provisioning/test_orders.py rather than here, so any other caller gets
+    the same limits.
+    """
+    _require_uuid(merchant_id, "merchant_id")
+    if get_merchant(conn, merchant_id) is None:
+        raise HTTPException(status_code=404, detail="merchant not found")
+
+    try:
+        order_client = RazorpayOrderClient()
+    except RuntimeError:
+        raise HTTPException(status_code=500, detail="server is not configured with Razorpay credentials")
+
+    try:
+        result = create_test_orders(
+            conn,
+            order_client,
+            merchant_id,
+            kind=request.kind,
+            count=request.count,
+            amount=request.amount,
+            currency=request.currency,
+            label=request.label,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RazorpayAPIError:
+        raise HTTPException(status_code=502, detail="Razorpay refused the order creation request")
+    finally:
+        order_client.close()
+
+    return CreateTestOrdersResponse(
+        experiment_id=result.experiment_id,
+        merchant_id=result.merchant_id,
+        kind=result.kind,
+        orders=[
+            CreatedOrderSummary(
+                position=o.position, order_id=o.order_id, amount=o.amount,
+                currency=o.currency, status=o.status,
+            )
+            for o in result.orders
+        ],
+    )
+
+
+@app.get(
+    "/experiments/{experiment_id}",
+    response_model=ExperimentDetailResponse,
+    responses={404: {"model": ErrorResponse}},
+)
+def experiment_detail(
+    experiment_id: str, conn: psycopg.Connection = Depends(get_db)
+) -> ExperimentDetailResponse:
+    """The cohort and whatever payment state has actually been observed.
+
+    Orders nobody has paid come back with null payment fields rather than
+    being omitted -- the cohort is the denominator and it does not shrink.
+    """
+    _require_uuid(experiment_id, "experiment_id")
+    experiment = get_experiment(conn, experiment_id)
+    if experiment is None:
+        raise HTTPException(status_code=404, detail="experiment not found")
+
+    rows = list_experiment_orders_with_state(conn, experiment_id)
+    return ExperimentDetailResponse(
+        experiment_id=str(experiment["id"]),
+        merchant_id=str(experiment["merchant_id"]),
+        kind=experiment["kind"],
+        source=experiment["source"],
+        label=experiment["label"],
+        created_at=experiment["created_at"].isoformat(),
+        orders=[
+            ExperimentOrderState(
+                position=row["position"],
+                order_id=row["order_id"],
+                amount=row["amount"],
+                currency=row["currency"],
+                order_status=row["order_status"],
+                payment_attempt_id=row["payment_attempt_id"],
+                payment_status=row["payment_status"],
+                payment_captured=row["payment_captured"],
+                payment_method=row["payment_method"],
+                error_reason=row["error_reason"],
+                error_step=row["error_step"],
+                error_source=row["error_source"],
+                payment_observed_at=(
+                    row["payment_observed_at"].isoformat() if row["payment_observed_at"] else None
+                ),
+            )
+            for row in rows
+        ],
+    )
+
+
+@app.get(
+    "/experiments/{experiment_id}/failure-pattern",
+    response_model=FailurePatternReport,
+    responses={404: {"model": ErrorResponse}},
+)
+def experiment_failure_pattern(
+    experiment_id: str, conn: psycopg.Connection = Depends(get_db)
+) -> FailurePatternReport:
+    """Problem 03, over a frozen cohort: one payment failing, or many?"""
+    _require_uuid(experiment_id, "experiment_id")
+    if get_experiment(conn, experiment_id) is None:
+        raise HTTPException(status_code=404, detail="experiment not found")
+    return analyze_experiment(conn, experiment_id)
+
+
+@app.get(
+    "/merchants/{merchant_id}/failure-pattern",
+    response_model=FailurePatternReport,
+    responses={404: {"model": ErrorResponse}},
+)
+def merchant_failure_pattern(
+    merchant_id: str, limit: int = 20, conn: psycopg.Connection = Depends(get_db)
+) -> FailurePatternReport:
+    """Problem 02, over this merchant's recent payments."""
+    _require_uuid(merchant_id, "merchant_id")
+    if get_merchant(conn, merchant_id) is None:
+        raise HTTPException(status_code=404, detail="merchant not found")
+    bounded_limit = max(1, min(limit, 200))
+    return analyze_recent_payments(conn, merchant_id, limit=bounded_limit)
+
+
+@app.get(
+    "/payments/{payment_attempt_id}/customer-history",
+    response_model=CustomerHistoryResponse,
+    responses={404: {"model": ErrorResponse}},
+)
+def payment_customer_history(
+    payment_attempt_id: str, conn: psycopg.Connection = Depends(get_db)
+) -> CustomerHistoryResponse:
+    """Problem 04: what this payer's previous payments with this merchant
+    actually were.
+
+    identity_available is reported separately from the counts so a caller
+    can distinguish "this payer has no prior payments" from "this payment
+    carries nothing to recognise a payer by". Collapsing those two into a
+    zero would state a fact about a customer that was never observed.
+    """
+    attempt = get_payment_attempt(conn, payment_attempt_id)
+    if attempt is None:
+        raise HTTPException(status_code=404, detail="payment not found")
+
+    order = get_order(conn, attempt["order_id"])
+    if order is None:
+        raise HTTPException(status_code=404, detail="order not found for this payment")
+
+    history = summarize_customer_history(
+        conn,
+        merchant_id=str(order["merchant_id"]),
+        payment_attempt_id=payment_attempt_id,
+        raw_reference=attempt["raw_reference"],
+        as_of=attempt["observed_at"],
+    )
+
+    return CustomerHistoryResponse(
+        payment_attempt_id=payment_attempt_id,
+        identity_available=history is not None,
+        history=CustomerHistorySummary(**history.model_dump()) if history else None,
     )
 
 

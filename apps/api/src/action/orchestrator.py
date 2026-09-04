@@ -50,7 +50,18 @@ from .razorpay_write_client import RazorpayWriteClient
 _DECISION_TYPE_TO_ACTION_TYPE: dict[str, str] = {
     "RECOMMEND_RETRY_PROMPT": "CUSTOMER_RETRY_PROMPT",
     "RECOMMEND_CAPTURE": "CAPTURE_PAYMENT",
+    "RECOMMEND_ESCALATION": "ESCALATE_TO_MERCHANT",
+    "RECOMMEND_STOP": "STOP_RECOVERY",
 }
+
+# Interventions executed entirely inside this system. They make NO external
+# call -- no Razorpay request, no email, no webhook -- so executing one
+# consists precisely of recording that it happened. They terminate at
+# EXECUTED and are never sent to Verification, because Verification's job is
+# to independently re-read EXTERNAL state and there is no external state
+# here to read. Claiming to have "verified" them would be verifying our own
+# database row against itself.
+_INTERNAL_ACTION_TYPES: frozenset[str] = frozenset({"ESCALATE_TO_MERCHANT", "STOP_RECOVERY"})
 
 
 def propose_action(
@@ -144,6 +155,8 @@ def _authorize(
     action = get_action(conn, action_id)
     if action["action_type"] == "CAPTURE_PAYMENT":
         execute_capture(conn, action_id, write_client=write_client)
+    elif action["action_type"] in _INTERNAL_ACTION_TYPES:
+        execute_internal_intervention(conn, action_id)
     # CUSTOMER_RETRY_PROMPT: deliberately stops here. No EXECUTING, no
     # ACTION_EXECUTED, no dispatch at all -- see module docstring.
 
@@ -205,3 +218,53 @@ def _attempt_capture(client: RazorpayWriteClient, payment_id: str, amount: int) 
         return {"outcome": "ambiguous_failure", "error_type": type(exc).__name__}
     else:
         return {"outcome": "success_response", "http_status": 200, "razorpay_status": result.get("status")}
+
+
+def execute_internal_intervention(conn: psycopg.Connection, action_id: UUID | str) -> dict[str, Any]:
+    """Execute an ESCALATE_TO_MERCHANT or STOP_RECOVERY action.
+
+    These are terminal recovery outcomes, not failures to recover: stopping
+    a payment that cannot be recovered, and handing one to a human, are both
+    correct answers to "what is the right intervention". Recording them as
+    first-class executed actions -- with policy evaluation, authorization,
+    idempotency, and an ACTION_EXECUTED audit entry, exactly like a capture
+    -- is what makes them auditable and countable in batch metrics.
+
+    recovered_amount is explicitly 0. Neither intervention moves money, and
+    the batch ledger reads this field, so stating it here means an
+    escalation can never inflate a recovery total.
+    """
+    action = get_action(conn, action_id)
+    if action is None:
+        raise ValueError(f"no action found with id {action_id}")
+    if action["action_type"] not in _INTERNAL_ACTION_TYPES:
+        raise ValueError(f"action {action_id} is not an internal intervention (type={action['action_type']})")
+
+    # Same defense-in-depth re-check the capture path performs, against the
+    # PERSISTED policy evaluation rather than a caller-supplied value.
+    if not action["policy_evaluation"].get("allowed"):
+        raise PermissionError(f"action {action_id} is not policy-authorized; refusing to execute")
+
+    if not claim_action_for_execution(conn, action_id):
+        return get_action(conn, action_id)
+
+    decision = get_decision(conn, action["decision_id"])
+    execution_reference = {
+        "outcome": "recorded_internally",
+        "intervention": action["action_type"],
+        "reason_codes": decision["reason_codes"],
+        "external_call_made": False,
+    }
+    outcome = {
+        "intervention": action["action_type"],
+        "recovered_amount": 0,
+        "moves_money": False,
+    }
+    update_action_status(
+        conn, action_id, "EXECUTED", execution_reference=execution_reference, outcome=outcome
+    )
+    insert_audit_entry(
+        conn, "ACTION_EXECUTED", execution_reference,
+        decision_id=str(action["decision_id"]), action_id=str(action_id),
+    )
+    return get_action(conn, action_id)

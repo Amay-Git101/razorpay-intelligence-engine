@@ -1,262 +1,262 @@
-# Decision Intelligence Console — Razorpay Payment Recovery
+# Payment Recovery Lab
 
-**Payments don't need to end at `AUTHORIZED`.** An explainable payment decision and recovery
-engine for Razorpay: it observes payment state, evaluates recovery opportunities, applies
-merchant policy, executes authorized actions, and independently verifies the outcome — every
-step recorded to an audit trail.
+**Razorpay Buildathon — AI Revenue Recovery track**
 
-**[Live demo →](#public-deployment)** &nbsp;·&nbsp; **[5-minute pitch video →](#5-minute-pitch)** &nbsp;·&nbsp; Razorpay Buildathon submission
-
-<a name="5-minute-pitch"></a>
-> **5-minute pitch video:** _TODO — add the video URL here once recorded._
-
-![Payments don't need to end at AUTHORIZED — Observe, Reason, Authorize, Act, Verify](docs/preview.svg)
+An agent that triages a merchant's failed-payment backlog: it detects revenue at
+risk, classifies why each payment failed, selects a bounded intervention, gates
+every action against deterministic merchant policy, independently verifies
+whatever it does, and reports what happened to every rupee.
 
 ---
 
-## Problem
+## The problem
 
-A payment that reaches Razorpay `authorized` but isn't captured — a manual-capture merchant
-who forgets to act, a timing gap, a missed webhook — is revenue sitting on the table until
-Razorpay's authorization window expires. Handling this safely means answering four questions
-correctly, every time: *should we act on this payment, are we allowed to, did the action
-actually happen, and can we prove all of it afterward?* Getting any one of those wrong with a
-money-moving operation is a real cost, not a bug report.
+When a payment fails, Razorpay tells the merchant it failed. It does not tell
+them **which failures are worth chasing, what to do about each one, or when to
+stop.**
 
-## What we built
+That costs money in both directions. Doing nothing leaves recoverable revenue on
+the table. A blind retry cron re-charges cards that were reported stolen, hammers
+issuers that already declined permanently, and burns issuer trust chasing money
+that was never recoverable.
 
-A backend pipeline plus a live console that turns a raw Razorpay payment-state change into an
-audited, policy-bounded action:
+**This is deliberately not "automatic payment capture."** Capture is the last
+step of the funnel and Razorpay already ships it as a setting. A system whose
+only lever is capture is a wrapper around a checkbox. The open question is
+upstream, on failures: *what should happen next, and should anything happen at
+all?*
 
-```
-OBSERVE  → Reconciliation polls Razorpay's Orders/Payments API and diffs it
-           against what we already know.
-REASON   → RuleBasedEngine evaluates the change and proposes a decision
-           (e.g. RECOMMEND_CAPTURE), with explicit reason codes.
-AUTHORIZE→ Policy checks the proposal against the merchant's own configured
-           limits and returns ALLOW / APPROVAL_REQUIRED / BLOCK.
-ACT      → Only an ALLOWed action reaches the one write path in the system —
-           a bounded call to Razorpay's capture endpoint.
-VERIFY   → The outcome is independently re-confirmed against a fresh
-           Razorpay read, never assumed from the write call's response.
-```
+---
 
-Every one of those five steps is a real, separately-testable module — not a demo shortcut.
+## What it actually did
 
-## Live verified flow
+Two runs over an identically-seeded 40-order backlog — **₹9,97,268.23 at risk**,
+reproducible from a fixed seed. The only variable is whether the diagnosis layer
+was available.
 
-This exact sequence was run against a real Razorpay **Test Mode** order and a live Postgres
-database (not a fixture, not a recording):
+| Outcome | With diagnosis | No model (control) |
+|---|---|---|
+| Automated retry prompt | 19 · ₹7,35,923 · 73.8% | **0** |
+| Stopped by a stopping rule | 15 · ₹1,96,241 · 19.7% | 2 · ₹16,968 · 1.7% |
+| Escalated to a human | 6 · ₹65,104 · 6.5% | **38 · ₹9,80,300 · 98.3%** |
 
-```
-₹500 · Razorpay Test Mode
-AUTHORIZED, captured=false
-        ↓
-RECOMMEND_CAPTURE      (RuleBasedEngine: status == "authorized")
-        ↓
-ALLOW                  (Policy: amount within merchant's auto-capture limit)
-        ↓
-CAPTURE_PAYMENT        (Action: the one bounded write path — POST /payments/:id/capture)
-        ↓
-VERIFIED_SUCCESS       (Verification: re-fetched from Razorpay, status + amount matched)
-        ↓
-₹500 recovered
-```
+Read the control column carefully — it is the safety argument, measured rather
+than asserted. **Removing the model automates nothing.** It hands almost
+everything to a human. The two stops that survive are retry-budget cases, which
+are evaluated *before* the diagnosis is read and therefore do not depend on it.
 
-The live console's **Live proof** section reads this same order from the running API in
-real time — see [`GET /orders/{order_id}/timeline`](#decision--policy--action--verification-explanation).
-
-## Architecture
-
-```mermaid
-flowchart LR
-    RZP[(Razorpay Test Mode)] -- poll --> REC[Reconciliation]
-    REC -- canonical event --> DEC[RuleBasedEngine\nDecision]
-    DEC -- proposal --> POL[Policy\nmerchant policy_config]
-    POL -- ALLOW --> ACT[Action\nCAPTURE_PAYMENT]
-    ACT -- write --> RZP
-    ACT -- proposed action --> VER[Verification]
-    VER -- independent read --> RZP
-    VER -- terminal result --> AUD[(Audit trail\nappend-only)]
-    DEC -. every step .-> AUD
-    POL -. every step .-> AUD
-    ACT -. every step .-> AUD
-
-    subgraph Console [Decision Intelligence Console — apps/web]
-        UI[Dashboard + Order detail]
-    end
-    API[FastAPI — apps/api/src/api] -- reads/serves --> UI
-    AUD --> API
-    UI -- POST reconcile --> API
-    API -- calls --> REC
-```
-
-One Postgres database (Neon) is the single source of truth; the FastAPI service (`apps/api`)
-is a thin, read-mostly HTTP surface over the same pipeline the CLI runner uses — the frontend
-never talks to Postgres or Razorpay directly.
-
-## Decision → Policy → Action → Verification explanation
-
-| Stage | Module | What it does | What it never does |
-|---|---|---|---|
-| Reconciliation | `src/reconciliation/` | Fetches Razorpay order/payment state, diffs it, records canonical events | Guess at state it hasn't fetched |
-| Decision | `src/intelligence/rule_based.py` | Deterministic `RuleBasedEngine` — fixed rules, explicit reason codes | Score confidence from anything but the observed rule condition |
-| Policy | `src/policy/` | Checks a proposal against the merchant's own `policy_config` (`max_auto_capture_amount`, `approval_band_upper`) | Allow a money-moving action past a missing/invalid config — it fails closed |
-| Action | `src/action/` | The **only** module that may call `RazorpayWriteClient.capture_payment()` | Execute anything Policy didn't `ALLOW` |
-| Verification | `src/verification/` | Independently re-fetches the payment from Razorpay before declaring success | Trust the write call's own response as the terminal outcome |
-
-Every one of these boundaries — which module may import what, which module may write, which
-module may call Razorpay — is enforced by `apps/api/tests/test_architecture_boundaries.py`,
-not just by convention or code review.
-
-## Why deterministic rules, not ML
-
-**`RuleBasedEngine` — deterministic `rule_v1`.** Payment capture is a money-moving operation,
-so v1 deliberately prioritizes:
-
-- **Explainability** — every decision carries the exact reason codes that produced it.
-- **Deterministic behavior** — the same observed state always yields the same decision.
-- **Explicit policy enforcement** — merchant-configured limits gate every action, unconditionally.
-- **Auditability** — every step is written to an append-only audit trail.
-- **Independent verification** — no action is trusted without re-confirming it against Razorpay.
-
-The system already records verified capture outcomes against each decision's expectation
-baseline (`src/feedback/`) — the foundation for, but not yet, a calibrated model:
-
-```
-historical verified outcomes → calibrated decision intelligence → improved recovery recommendations
-```
-
-This is a stated direction, not a current capability. Nothing in this project calls
-`RuleBasedEngine` an ML model or a trained model, anywhere — including in its own UI, and that
-claim is enforced by a test (`test_frontend_never_calls_the_engine_an_ml_model`).
-
-## Failure recovery story
-
-**Symptom:** an initial Razorpay Test Mode transaction unexpectedly reached `captured` state
-before our reconciliation flow ever observed it as `authorized` / `captured: false` — so the
-recovery pipeline had nothing to act on.
-
-**We investigated, in order:** the fetched payment state, how the order had been created, the
-Checkout configuration used to pay it, the read-client adapter's invocation, reconciliation's
-status-to-event mapping, and whether our own code had somehow triggered a capture.
-
-**Finding:** our code never captured anything — the read-only Razorpay client
-(`RazorpayReadClient`) exposes no write method at all, and the write path
-(`RazorpayWriteClient.capture_payment`) is never invoked by reconciliation; an
-architecture-boundary test proves this structurally. The order itself had reached Razorpay
-already captured, most likely because it wasn't created with an explicit manual-capture
-configuration, unlike an earlier, correctly-behaving reference order from our own Phase 1
-verification (`docs/phase1-verification-report.md`).
-
-**Fix:** we created a fresh Test Mode order with explicit manual capture. It correctly landed
-in `authorized` / `captured: false`. Our system then produced
-`RECOMMEND_CAPTURE → ALLOW → CAPTURE_PAYMENT → VERIFIED_SUCCESS`, and Razorpay independently
-confirmed `captured: true` — the live verified flow shown above.
-
-## Tech stack
-
-- **Backend:** Python, FastAPI, `psycopg` (PostgreSQL driver), `httpx` (Razorpay HTTP calls), Pydantic
-- **Database:** PostgreSQL (Neon, serverless)
-- **Frontend:** vanilla HTML/CSS/JS — no build step, no framework, no Node dependency
-- **Testing:** `pytest`, with a dedicated architecture-boundary test suite (pure Python, no DB)
-- **Payments:** Razorpay Test Mode (Orders / Payments read API + capture write endpoint)
-
-No React/Next/Node, no webhooks, no authentication layer, no ML framework — all deliberate
-scope decisions for this stage, not oversights (see [Known limitations](#known-limitations--future-direction)).
-
-## Repository structure
-
-```text
-apps/
-  api/
-    src/
-      domain/          Pydantic contracts shared across every module
-      db/               DATABASE_URL -> psycopg connection, migrations
-      repository/       One module per table -- thin data access, no business logic
-      razorpay_client/  Read-only Razorpay client (client.py) -- no write method exists here
-      reconciliation/   Polls Razorpay, diffs state, records canonical events
-      intelligence/     RuleBasedEngine -- the deterministic decision module
-      policy/           Merchant policy_config enforcement (ALLOW/APPROVAL_REQUIRED/BLOCK)
-      action/           The one module allowed to call Razorpay's capture endpoint
-      verification/     Independently re-confirms the outcome against Razorpay
-      feedback/         Verified-outcome -> expectation-baseline calibration infrastructure
-      observability/    Read-only metrics aggregation over decisions/actions
-      evaluation/       Independent RuleBasedEngine evaluation harness
-      pipeline/         Shared reconcile -> decide -> propose -> verify orchestration
-      manual_run/       CLI entry point over the shared pipeline
-      api/              FastAPI HTTP surface over the shared pipeline (this app's backend)
-    tests/               pytest suite, including test_architecture_boundaries.py
-    test-checkout.html   Manual Razorpay Test Mode checkout page used for live verification
-  web/                  Static frontend served by api/app.py's StaticFiles mount
-    index.html, app.js, style.css
-docs/                    Verification reports, ADRs, this README's preview graphic
-render.yaml               Deployment blueprint (see "Public deployment" below)
-```
-
-## Local setup
+Reproduce both:
 
 ```bash
-cd apps/api
-python -m venv .venv
-.venv/Scripts/pip install -e ".[dev]"          # Windows Git Bash
-# .venv\Scripts\pip.exe install -e ".[dev]"    # PowerShell
-
-export DATABASE_URL=postgresql://user:password@host:5432/dbname
-export RAZORPAY_KEY_ID=rzp_test_xxxxxxxx
-export RAZORPAY_KEY_SECRET=xxxxxxxxxxxxxxxx
-
-.venv/Scripts/python -m db.run_migrations
-.venv/Scripts/python -m uvicorn api.app:app --reload
+cd apps/api && python -m seed.synthetic_backlog <merchant_id> --orders 40
 ```
 
-Open **http://127.0.0.1:8000/**.
+```bash
+cd apps/api && python -m manual_run.run_recovery_batch <merchant_id> --source synthetic
+```
 
-## Demo instructions
+---
 
-1. Open the app — you land on the product overview (this page's hero, how-it-works, live
-   proof, AI-judgment, and failure-recovery sections).
-2. Click **Explore the live console** (or the **Console** nav link) to see live merchant data:
-   observability metrics and an orders table, read directly from the API.
-3. Click any order to open its detail page — pipeline tracker, decision/policy/action/
-   verification cards, and the append-only audit trail.
-4. **Reconcile Order** re-polls Razorpay for that specific order and processes any new events
-   through the full decision pipeline live, in front of you.
+## Where the AI is, and why it is safe there
 
-## Known limitations / future direction
+The model classifies **why a payment failed** — a root cause, a failure class
+(`TRANSIENT` / `TERMINAL` / `AMBIGUOUS`), a retry recommendation, a confidence.
+It decides nothing about money.
 
-- No webhook ingestion — reconciliation is on-demand (manual trigger or CLI sweep), by design
-  for this stage; see the architecture contract for the planned webhook path.
-- No merchant switcher in the console — the dashboard shows the most recently created
-  merchant; adding a selector is a UI-only change, not an architecture change.
-- `RuleBasedEngine` is deterministic, not learned — see "Why deterministic rules, not ML" above.
-- No authentication layer — this is a Test Mode demo surface, not a production merchant panel.
-- Calibrated decision intelligence from historical verified outcomes is a stated direction,
-  not yet built (the underlying expectation-baseline data is already being recorded).
+That is a genuine judgement. Razorpay's `error_reason` is structured but coarse:
+`payment_failed` covers a temporary bank outage, a stolen-card block, and a bare
+`"Payment failed."` — three different interventions. The distinguishing
+information lives only in the issuer's free-text description.
 
-<a name="public-deployment"></a>
-## Public deployment
+```bash
+cd apps/api && python -m evaluation.diagnosis_harness
+```
 
-The app is a single FastAPI service (`apps/api`) that also serves the static frontend — no
-separate frontend deployment is needed. A [Render](https://render.com) Blueprint
-(`render.yaml`) is included at the repo root; deployment itself has not been performed (it
-requires your own Razorpay/Neon credentials, which this project never has access to).
+> **5 error_reason values map to more than one failure class, costing the best
+> possible lookup table 6 unavoidable errors.**
 
-**To deploy on Render:**
+The baseline is *fitted on the answers themselves*, so no reason-code lookup can
+do better — those six errors are irreducible. **The model's own score in that
+report is self-consistent by construction and is not evidence of capability;
+disregard it.** Only the structural finding survives, and it is checkable by
+reading the corpus.
 
-1. Push this repository to a public GitHub repo (or connect the private one).
-2. In Render: **New → Blueprint**, select this repo — Render reads `render.yaml` automatically.
-3. When prompted, set these environment variables (Render marks them `sync: false`, so you
-   enter them yourself — they are never committed to the repo):
-   - `DATABASE_URL` — your Neon Postgres connection string
-   - `RAZORPAY_KEY_ID` — your Razorpay Test Mode key id
-   - `RAZORPAY_KEY_SECRET` — your Razorpay Test Mode key secret
-4. Deploy. Render builds with `pip install -e .` and starts with
-   `uvicorn api.app:app --host 0.0.0.0 --port $PORT`, both from `apps/api`.
-5. Once live, run migrations once against the same `DATABASE_URL` from your machine:
-   `DATABASE_URL=... .venv/Scripts/python -m db.run_migrations`.
-6. Update the **Live demo** link at the top of this README with the public URL Render gives you.
+### Three safety properties, each with a test
 
-Any other Python-hosting provider (Railway, Fly.io, a plain VM) works the same way: install
-`apps/api` with `pip install -e .`, run `uvicorn api.app:app --host 0.0.0.0 --port $PORT` from
-that directory, and set the same three environment variables.
+1. **The model is never told what a payment is worth.** `FailureSignals` is a
+   strict allowlist with no amount, no currency, no customer identity, and
+   `extra="forbid"` — so passing an amount is an error, not a silent drop. It
+   cannot be steered toward aggression on a large payment because it does not
+   know the payment is large.
+2. **The model cannot override a stopping rule.** The retry-budget check runs
+   *before* the diagnosis is read at all. Rule order is a security property here,
+   not a style choice.
+3. **A degraded model produces more human review, never more automation.** No
+   diagnosis, low confidence, `AMBIGUOUS`, or a self-contradictory result all
+   route to escalation. See the control column above.
+
+Enforced architecturally, not by convention: `policy/`, `action/`,
+`verification/` and `repository/` **cannot import the diagnosis layer at all**,
+and only `diagnosis/` may import an LLM SDK. Both are checked by tests.
+
+### Where inference runs
+
+**This deployment does not call a language model at request time.** Claude Opus 5
+classified each failure-evidence pattern offline into
+`datasets/diagnosis/failure_corpus.json`; `PrecomputedDiagnoser` serves those,
+keyed on a fingerprint of the evidence, and a cache miss escalates rather than
+guessing. Persisted diagnoses carry `model_version = claude-opus-5/diagnosis_v1/offline`
+so a replay is distinguishable from a live call in the database.
+
+`AnthropicDiagnoser` implements the same protocol and calls the API live;
+`--live-model` with an `ANTHROPIC_API_KEY` swaps it in and changes nothing else.
+
+---
+
+## Real vs synthetic
+
+Enforced by a database CHECK constraint, not by documentation.
+`recovery_batches.source` must be `'razorpay_test_mode'` or `'synthetic'` — there
+is no way to create a batch that does not declare which. The label rides on the
+ledger as `money_is_real`, is returned by the API, and renders as a banner the UI
+has no code path to omit.
+
+Synthetic payments are only ever `failed`, and no failed payment can reach the
+Razorpay write path, so the synthetic batch is **provably free of external
+calls**.
+
+The one real transaction, verified end to end in Razorpay Test Mode:
+
+| | |
+|---|---|
+| Order | `order_TXueleNMbhnp2s` |
+| Payment | `pay_TXv6XNq04gxHpe` |
+| Amount | ₹500 |
+| Initial state | `authorized`, `captured=false` |
+| Pipeline | `RECOMMEND_CAPTURE` → `ALLOW` → `CAPTURE_PAYMENT` → `VERIFIED_SUCCESS` |
+| Confirmed by | an independent re-read of Razorpay: `captured=true` |
+| Resolution | 3.9 seconds |
+
+---
+
+## Measuring recovery
+
+Two quantities, never merged — merging them is how this number becomes a lie.
+
+- **Disposition**: a partition of the batch's frozen `revenue_at_risk` across
+  mutually exclusive outcomes. Every paisa lands in exactly one bucket and the
+  buckets sum to the total — *checked*, not assumed. The API returns
+  `disposition_is_complete`, and the UI refuses to draw a breakdown that does not
+  add up.
+- **Verified recovery**: the sum of `outcome.recovered_amount` over captures that
+  reached `VERIFIED_SUCCESS`, read from the action's own outcome.
+
+Detection excludes orders already `paid`, and counts an order with three failed
+attempts **once** — both enforced in SQL, because `revenue_at_risk` is the
+denominator of every percentage reported and inflating it would flatter
+everything.
+
+`STOPPED` is reported as money no longer being pursued. Never as money recovered
+or saved.
+
+---
+
+## Four problems you can run yourself
+
+The site is four experiments, not a dashboard. Open it and pick one.
+
+**01 · An authorized payment needs a decision.** Pick ₹500 or ₹8,000, pay a
+real Test Mode order in Razorpay's own Checkout, and watch the pipeline read
+the payment, recommend, gate on merchant policy, act only if allowed, and
+verify with Razorpay what actually happened. The amount is the experiment:
+one side of the merchant's configured limit is captured automatically, the
+other is not.
+
+**02 · Is the payment gateway having trouble?** Counts what this merchant's
+recent payments actually did. Observed counts, then arithmetic, then
+interpretation — kept apart so the conclusion can be checked against its
+evidence. It reports concentration; it never claims an outage it cannot see.
+
+**03 · Is this one payment failing, or are many failing?** Creates six real
+Test Mode orders and freezes them as a group before any is paid. You decide
+which succeed and which fail, in Razorpay's dialog. The conclusion is
+computed from those six and changes when your results change.
+
+**04 · Does the customer's previous payment behaviour change the decision?**
+Pay more than once as the same payer. The history is real — Razorpay's
+payment object carries the email and this system already stored it. History
+can send a payment to a human for review; it can never buy it more
+automation.
+
+Every state shown comes from a real Razorpay operation, a real database
+record, or a real calculation. Creating an order moves no money; only a
+human completing Checkout can produce a payment, which is why the outcomes
+are worth analysing.
+
+## Running it
+
+```bash
+cd apps/api && python -m venv .venv && .venv/Scripts/pip install -e ".[dev]"
+```
+
+Create `apps/api/.env` (gitignored — never commit it):
+
+```
+DATABASE_URL=postgresql://...
+RAZORPAY_KEY_ID=rzp_test_...
+RAZORPAY_KEY_SECRET=...
+```
+
+```bash
+cd apps/api && python -m db.run_migrations
+```
+
+```bash
+cd apps/api && .venv/Scripts/python -m uvicorn api.app:app --port 8010 --app-dir src
+```
+
+Frontend at `http://localhost:8010/`. Tests:
+
+```bash
+cd apps/api && python -m pytest -q
+```
+
+**365 passing** against a live Postgres. Without `DATABASE_URL` the DB-backed
+tests skip rather than fail.
+
+---
+
+## Layout
+
+| Path | |
+|---|---|
+| `apps/api/src/risk/` | revenue-at-risk detection (deterministic SQL) |
+| `apps/api/src/diagnosis/` | the AI layer — the only package that may touch a model |
+| `apps/api/src/intelligence/recovery_engine.py` | intervention selection (deterministic) |
+| `apps/api/src/policy/` | merchant policy gate |
+| `apps/api/src/action/` | bounded execution + the Razorpay write boundary |
+| `apps/api/src/verification/` | independent re-read of external state |
+| `apps/api/src/observability/batch_ledger.py` | batch recovery ledger |
+| `apps/api/src/pipeline/recovery.py` | the batch workflow |
+| `apps/api/tests/test_architecture_boundaries.py` | the boundaries above, enforced |
+| `docs/ARCHITECTURE.md` | full architecture, incl. §9 honest limitations |
+
+---
+
+## Limitations
+
+Summarised; the full list is [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §9.
+
+- The classifier is **unvalidated on real traffic**. The corpus is small and
+  single-author, and its accuracy figures are self-consistent by construction.
+- **Inference is offline.** No model is called at request time in this
+  deployment.
+- **Only one real payment moved money.** Authorising a Test Mode payment needs a
+  human in a browser, so scale is demonstrated synthetically and labelled as such
+  everywhere.
+- `CUSTOMER_RETRY_PROMPT` **has no external effect** — it stops at `AUTHORIZED`
+  and is reported as `RETRY_PENDING`, never as a recovery. Wiring it up means
+  Razorpay Payment Links, which was scoped out.
+- **Escalation is a queue, not a notification.** It records an auditable outcome;
+  it does not email anyone.
+- **Webhooks are not implemented** — event ingestion is API-poll only.

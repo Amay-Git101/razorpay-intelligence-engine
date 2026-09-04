@@ -4,279 +4,40 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="light" />
-  <title>Payment Recovery Lab — Razorpay Decision Intelligence</title>
-  <meta name="description" content="A Razorpay Test Mode payment is authorized but not captured. Run the recovery and watch a real decision engine observe, reason, apply merchant policy, act, and independently verify the outcome -- or try your own scenario." />
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%232f6fed'/%3E%3Cpath d='M28 70 L28 30 L50 30 Q64 30 64 44 Q64 56 50 56 L38 56 L72 70' stroke='white' stroke-width='8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+  <title>Payment Decision System — Razorpay Test Mode</title>
+  <meta name="description" content="Four real payment problems you can run yourself against Razorpay Test Mode: an authorized payment needing a decision, gateway trouble detection, isolated versus widespread failures, and customer payment history as context." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%230b1220'/%3E%3Cpath d='M26 68 L26 32 L52 32 Q66 32 66 46 Q66 58 52 58 L38 58 L74 68' stroke='%234f7cff' stroke-width='9' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
   <link rel="stylesheet" href="/style.css" />
+  <!--
+    Razorpay Checkout. This is Razorpay's own script, loaded from Razorpay's
+    own domain, and it is the only external resource this page loads. It is
+    what makes the payment step real: the evaluator enters Test Mode payment
+    details in Razorpay's dialog, not in anything this project wrote.
+
+    It receives the publishable key id, fetched at runtime from
+    /checkout-config. The secret never reaches the browser -- there is no
+    endpoint that returns it.
+  -->
+  <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
 </head>
 <body>
-  <header class="site-header">
-    <a href="#" class="brand" aria-label="Payment Recovery Lab — home">
-      <span class="brand-mark" aria-hidden="true">◆</span>
-      <span class="brand-name">Payment Recovery Lab</span>
+  <header class="topbar">
+    <a class="wordmark" href="#/">
+      <span class="wordmark-mark" aria-hidden="true"></span>
+      <span>Payment Decision System</span>
     </a>
-    <nav class="site-nav" aria-label="Primary">
-      <a href="#recovery">Run the recovery</a>
-      <a href="#lab">Try a scenario</a>
-      <a href="#proof">Live proof</a>
-      <a href="#console">Console</a>
-      <a href="https://github.com/" target="_blank" rel="noopener" class="nav-github">GitHub ↗</a>
-    </nav>
-    <div class="header-meta">
-      <div class="merchant-block">
-        <span class="label">Merchant</span>
-        <span id="merchant-name" class="merchant-name">—</span>
-      </div>
-      <div id="health-indicator" class="health-indicator" title="API health">
-        <span class="dot"></span><span class="health-text">checking&hellip;</span>
-      </div>
+    <div class="topbar-meta">
+      <span class="env-pill" id="env-pill">Razorpay Test Mode</span>
+      <span class="health" id="health"><i></i><span id="health-text">checking…</span></span>
     </div>
   </header>
 
-  <main id="app-root">
+  <main id="root" aria-live="polite"></main>
 
-    <!-- ================= LANDING ================= -->
-    <section id="landing-view" class="view">
+  <footer class="footer">
+    <span>Every state shown comes from a real Razorpay Test Mode operation, a real database record, or a real calculation. Nothing on this site is simulated.</span>
+  </footer>
 
-      <!-- ============ HERO ============ -->
-      <section class="hero">
-        <div class="hero-copy">
-          <span class="eyebrow">Razorpay Buildathon &middot; live Test Mode integration</span>
-          <h1 class="hero-title">Your payment was authorized.<br />Now what?</h1>
-          <p class="hero-sub">
-            See how a payment decision engine observes the state, reasons about recovery, applies
-            merchant policy, acts through Razorpay, and independently verifies the outcome.
-          </p>
-          <div class="hero-ctas">
-            <button type="button" class="btn btn-primary" id="hero-run-btn">Run the recovery</button>
-            <a href="#lab" class="btn btn-secondary">Try a scenario</a>
-          </div>
-        </div>
-
-        <div class="razorpay-object" id="hero-payment-object">
-          <div class="razorpay-object-head">
-            <span class="rzp-chip">RAZORPAY TEST MODE</span>
-          </div>
-          <div class="razorpay-object-amount" data-el="hero-amount">&hellip;</div>
-          <div class="razorpay-object-row">
-            <span class="razorpay-object-status" data-el="hero-status">&hellip;</span>
-            <span class="razorpay-object-captured" data-el="hero-captured"></span>
-          </div>
-          <div class="razorpay-object-ids">
-            <div><span class="ro-label">Order</span><span class="ro-val" data-el="hero-order-id">&hellip;</span></div>
-            <div><span class="ro-label">Payment</span><span class="ro-val" data-el="hero-payment-id">&hellip;</span></div>
-          </div>
-        </div>
-      </section>
-
-      <!-- ============ LIVE RECOVERY ============ -->
-      <section id="recovery" class="landing-section">
-        <div class="section-head">
-          <span class="section-kicker">Live &middot; real API + database</span>
-          <h2 class="section-title">Watch the payment move</h2>
-          <p class="section-lede">
-            This runs against the real order shown above: it calls the live reconciliation API, then
-            renders exactly what the backend returns. Nothing here is a canned animation.
-          </p>
-        </div>
-
-        <div class="run-bar">
-          <button type="button" class="btn btn-primary" id="recovery-run-btn">Run the recovery</button>
-          <span id="recovery-status" class="run-status" aria-live="polite"></span>
-        </div>
-        <div id="recovery-error" class="error-state hidden"></div>
-
-        <div id="recovery-pipeline" class="pipeline-grid"></div>
-      </section>
-
-      <!-- ============ TRY A SCENARIO ============ -->
-      <section id="lab" class="landing-section landing-section-alt">
-        <div class="section-head">
-          <span class="section-kicker section-kicker-sim">Simulation &middot; no money movement</span>
-          <h2 class="section-title">Try a scenario</h2>
-          <p class="section-lede">
-            Set up a hypothetical payment and run it through the real decision and policy engines.
-            This never touches Razorpay or the database -- it is a pure, synthetic what-if.
-          </p>
-        </div>
-
-        <div class="lab-presets">
-          <button type="button" class="chip-btn" data-preset="capture">Capture this payment</button>
-          <button type="button" class="chip-btn" data-preset="approval">Needs approval</button>
-          <button type="button" class="chip-btn" data-preset="blocked">Blocked</button>
-          <button type="button" class="chip-btn" data-preset="already">Already captured</button>
-        </div>
-
-        <div class="lab-form">
-          <label class="lab-field">
-            <span>Amount (₹)</span>
-            <input type="number" id="lab-amount" value="500" min="0" step="1" />
-          </label>
-          <label class="lab-field">
-            <span>Payment state (Razorpay)</span>
-            <select id="lab-status">
-              <option value="authorized" selected>Authorized, not captured</option>
-              <option value="captured">Already captured</option>
-              <option value="failed">Failed</option>
-            </select>
-          </label>
-          <label class="lab-field">
-            <span>Merchant auto-capture limit (₹)</span>
-            <input type="number" id="lab-auto-limit" value="5000" min="0" step="1" />
-          </label>
-          <label class="lab-field">
-            <span>Approval band upper limit (₹)</span>
-            <input type="number" id="lab-approval-limit" value="10000" min="0" step="1" />
-          </label>
-          <button type="button" class="btn btn-primary lab-submit" id="lab-run-btn">Test this scenario</button>
-        </div>
-        <div id="lab-error" class="error-state hidden"></div>
-
-        <div id="lab-pipeline" class="pipeline-grid"></div>
-      </section>
-
-      <!-- ============ LIVE PROOF ============ -->
-      <section id="proof" class="landing-section">
-        <div class="section-head">
-          <span class="section-kicker">Real transaction</span>
-          <h2 class="section-title">Real Razorpay Test Mode transaction.</h2>
-          <p class="section-lede">Read from the live API and database. Not a screenshot. Not a fixture.</p>
-        </div>
-        <div id="proof-loading" class="loading-state">Loading&hellip;</div>
-        <div id="proof-error" class="error-state hidden"></div>
-        <div id="proof-card" class="proof-panel hidden"></div>
-      </section>
-
-      <!-- ============ FAILURE RECOVERY ============ -->
-      <section id="failure-recovery" class="landing-section landing-section-alt">
-        <div class="section-head">
-          <span class="section-kicker">Engineering evidence</span>
-          <h2 class="section-title">What broke, and how we got out</h2>
-          <p class="section-lede">Step through the actual incident.</p>
-        </div>
-        <div class="incident-stepper" id="incident-stepper">
-          <div class="incident-steps" id="incident-steps"></div>
-          <div class="incident-controls">
-            <button type="button" id="incident-prev" class="transport-btn">&larr; Back</button>
-            <div class="incident-dots" id="incident-dots"></div>
-            <button type="button" id="incident-next" class="transport-btn">Next &rarr;</button>
-          </div>
-        </div>
-      </section>
-
-      <!-- ============ AUDIT TRAIL ============ -->
-      <section id="audit" class="landing-section">
-        <div class="section-head">
-          <span class="section-kicker">Proof chain</span>
-          <h2 class="section-title">Every decision leaves a proof chain.</h2>
-          <p class="section-lede">Click a checkpoint to see what it means and its real backend payload.</p>
-        </div>
-        <ol class="proof-audit" id="proof-audit"></ol>
-      </section>
-
-      <!-- ============ ENGINEERING: WHY DETERMINISTIC ============ -->
-      <section id="judgment" class="landing-section landing-section-alt">
-        <div class="section-head">
-          <span class="section-kicker">Engineering detail</span>
-          <h2 class="section-title">Why a deterministic engine?</h2>
-        </div>
-        <div class="judgment-grid">
-          <div class="judgment-panel">
-            <span class="judgment-tag">V1 &middot; deterministic rule engine &middot; <code>rule_v1</code></span>
-            <p>Payment capture is a money-moving operation. Click each reason:</p>
-            <div class="judgment-reasons" id="judgment-reasons">
-              <button type="button" class="judgment-reason" data-reason="explain">Explainability</button>
-              <button type="button" class="judgment-reason" data-reason="deterministic">Predictable behavior</button>
-              <button type="button" class="judgment-reason" data-reason="policy">Policy enforcement</button>
-              <button type="button" class="judgment-reason" data-reason="audit">Auditability</button>
-              <button type="button" class="judgment-reason" data-reason="verify">Independent verification</button>
-            </div>
-            <p class="judgment-reason-detail" id="judgment-reason-detail">Every decision carries the exact reason codes that produced it — click a reason above.</p>
-          </div>
-          <div class="judgment-panel judgment-future">
-            <span class="judgment-tag judgment-tag-muted">Future direction &mdash; not yet built</span>
-            <div class="future-path">
-              <span>Verified outcomes</span>
-              <span class="future-arrow">→</span>
-              <span>Historical data</span>
-              <span class="future-arrow">→</span>
-              <span>Calibrated decision intelligence</span>
-              <span class="future-arrow">→</span>
-              <span>Better recommendations</span>
-            </div>
-            <p class="judgment-caveat">This is a stated direction, not a current capability. Nothing here is ML or a fitted/learned model.</p>
-          </div>
-        </div>
-      </section>
-
-      <!-- ============ CONSOLE TRANSITION ============ -->
-      <footer class="site-footer">
-        <div class="footer-transition">
-          <span>Want to inspect every decision?</span>
-          <a href="#console" class="btn btn-primary btn-small">Open decision console →</a>
-        </div>
-      </footer>
-    </section>
-
-    <!-- ================= DASHBOARD / CONSOLE ================= -->
-    <section id="dashboard-view" class="view hidden">
-      <div class="console-intro">
-        <h2 class="section-title">Decision Intelligence Console</h2>
-        <p class="section-lede">The deep-dive destination for technical judges. Live merchant data, read directly from the API.</p>
-      </div>
-      <div id="dashboard-loading" class="loading-state">Loading dashboard&hellip;</div>
-      <div id="dashboard-error" class="error-state hidden"></div>
-      <div id="dashboard-empty" class="empty-state hidden"></div>
-
-      <div id="dashboard-content" class="hidden">
-        <section class="metrics-section">
-          <h2 class="section-title">Observability</h2>
-          <div id="metrics-strip" class="metrics-strip"></div>
-        </section>
-
-        <section class="orders-section">
-          <h2 class="section-title">Orders</h2>
-          <div id="orders-table-wrap"></div>
-        </section>
-      </div>
-    </section>
-
-    <!-- ================= ORDER DETAIL ================= -->
-    <section id="detail-view" class="view hidden">
-      <button id="back-to-dashboard" class="link-button" type="button">&larr; Back to console</button>
-
-      <div id="detail-loading" class="loading-state">Loading order&hellip;</div>
-      <div id="detail-error" class="error-state hidden"></div>
-
-      <div id="detail-content" class="hidden">
-        <div class="detail-header">
-          <div id="order-info" class="order-info"></div>
-          <div class="reconcile-controls">
-            <button id="reconcile-btn" type="button">Reconcile Order</button>
-            <span id="reconcile-status" class="reconcile-status" aria-live="polite"></span>
-          </div>
-        </div>
-
-        <div id="reconcile-banner" class="banner hidden" role="status"></div>
-
-        <h2 class="section-title">Pipeline</h2>
-        <p class="section-lede">Reconciliation → Decision → Policy → Action → Verification → Outcome</p>
-        <div id="pipeline-tracker" class="tracker"></div>
-
-        <div class="card-grid">
-          <div class="card" id="decision-card"></div>
-          <div class="card" id="policy-card"></div>
-          <div class="card" id="action-card"></div>
-          <div class="card" id="verification-card"></div>
-        </div>
-
-        <h2 class="section-title">Audit trail</h2>
-        <p class="section-lede">An append-only proof chain &mdash; every checkpoint below was written by the backend as it happened.</p>
-        <div id="audit-timeline" class="audit-timeline"></div>
-      </div>
-    </section>
-  </main>
-
-  <script src="/app.js"></script>
+  <script type="module" src="/app.js"></script>
 </body>
 </html>

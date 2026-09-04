@@ -26,6 +26,7 @@ from typing import Any
 
 import psycopg
 
+from context.customer_history import summarize_customer_history
 from domain.contracts import ContextSnapshot, EventType, ProvenanceBand, ProvenancedField
 from repository.payment_attempts import list_payment_attempts_for_order
 
@@ -101,7 +102,68 @@ def _build_payment_attempt_context(
         ProvenancedField(field="attempt_number", value=attempt_number, band=ProvenanceBand.DERIVED, source="internal_count")
     )
 
+    fields.extend(_customer_history_fields(conn, event, payload, payment_attempt_id))
+
     return ContextSnapshot(order_id=order_id, payment_attempt_id=payment_attempt_id, fields=fields)
+
+
+def _customer_history_fields(
+    conn: psycopg.Connection,
+    event: dict[str, Any],
+    payload: dict[str, Any],
+    payment_attempt_id: str,
+) -> list[ProvenancedField]:
+    """The payer's prior payment outcomes with this merchant, when the
+    payment carries an identity to recognise them by.
+
+    ADDITIVE AND ABSENT-BY-DEFAULT. A payment with no email or contact --
+    every synthetic row, and any real payment where Razorpay returned
+    neither -- produces no fields at all, and every downstream rule that
+    reads them is written to behave exactly as it did before when they are
+    missing. That is what makes this safe to add to a decision path that
+    was already working: a context that cannot be enriched is identical to
+    the context this function was never called on.
+
+    Counts only. The address itself is never copied into the snapshot --
+    only the opaque fingerprint -- because the snapshot is persisted on
+    every decision and a stable key answers the same question.
+    """
+    history = summarize_customer_history(
+        conn,
+        merchant_id=str(event["merchant_id"]),
+        payment_attempt_id=payment_attempt_id,
+        raw_reference=payload,
+    )
+    if history is None:
+        return []
+
+    source = f"customer_history:{history.identity_kind}"
+    return [
+        ProvenancedField(
+            field="customer_identity_fingerprint",
+            value=history.identity_fingerprint,
+            band=ProvenanceBand.DERIVED,
+            source=source,
+        ),
+        ProvenancedField(
+            field="customer_prior_payment_count",
+            value=history.prior_payment_count,
+            band=ProvenanceBand.DERIVED,
+            source=source,
+        ),
+        ProvenancedField(
+            field="customer_prior_captured_count",
+            value=history.prior_captured_count,
+            band=ProvenanceBand.DERIVED,
+            source=source,
+        ),
+        ProvenancedField(
+            field="customer_prior_failed_count",
+            value=history.prior_failed_count,
+            band=ProvenanceBand.DERIVED,
+            source=source,
+        ),
+    ]
 
 
 def _build_order_context(payload: dict[str, Any], order_id: str) -> ContextSnapshot:
