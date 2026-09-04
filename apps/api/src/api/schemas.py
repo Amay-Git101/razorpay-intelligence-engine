@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from observability.metrics import (
     CaptureTerminalStatusDistribution,
@@ -158,3 +158,41 @@ class HealthResponse(BaseModel):
 
 class ErrorResponse(BaseModel):
     detail: str
+
+
+# ---------------------------------------------------------------------------
+# Decision lab (synthetic, side-effect-free scenario simulation)
+# ---------------------------------------------------------------------------
+
+
+class SimulationRequest(BaseModel):
+    """A hypothetical payment state, never a real Razorpay identifier or
+    a real database row -- see pipeline/simulation.py for the safety
+    boundary this enforces (no DB, no Razorpay, no write capability)."""
+
+    amount: int = Field(ge=0)
+    status: str
+    auto_capture_limit: int = Field(ge=0)
+    approval_limit: int = Field(ge=0)
+
+
+class SimulationDecisionSummary(BaseModel):
+    decision_type: str
+    confidence: float
+    reason_codes: list[str]
+    model_version: str
+
+
+class SimulationPolicySummary(BaseModel):
+    policy_version: str | None = None
+    allowed: bool | None = None
+    authority_level_granted: str | None = None
+    requires_approval: bool | None = None
+    reason_codes: list[str] = []
+
+
+class SimulationResponse(BaseModel):
+    input: SimulationRequest
+    decision: SimulationDecisionSummary
+    policy: SimulationPolicySummary | None = None
+    policy_skipped_reason: str | None = None

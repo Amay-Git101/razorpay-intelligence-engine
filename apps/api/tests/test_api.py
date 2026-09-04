@@ -419,3 +419,82 @@ def test_responses_never_contain_credential_like_values(monkeypatch):
 
     assert fake_secret not in response.text
     assert "definitely_not_real" not in response.text
+
+
+# ---------------------------------------------------------------------------
+# Decision lab (POST /decision-lab/simulate) -- side-effect-free, no DB
+# dependency override needed: this endpoint never touches a database or
+# Razorpay, so these tests run against the real RuleBasedEngine/policy
+# engine exactly like test_rule_based_engine.py/test_policy_rules.py do,
+# just through the HTTP layer.
+# ---------------------------------------------------------------------------
+
+_SIM_URL = "/decision-lab/simulate"
+
+
+def test_simulate_authorized_within_auto_limit_recommends_and_allows_capture():
+    response = client.post(
+        _SIM_URL,
+        json={"amount": 50000, "status": "authorized", "auto_capture_limit": 500000, "approval_limit": 1000000},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["decision"]["decision_type"] == "RECOMMEND_CAPTURE"
+    assert body["policy"]["allowed"] is True
+    assert body["policy"]["authority_level_granted"] == "AUTOMATIC"
+    assert body["policy"]["requires_approval"] is False
+    assert body["policy_skipped_reason"] is None
+
+
+def test_simulate_authorized_within_approval_band_requires_approval():
+    response = client.post(
+        _SIM_URL,
+        json={"amount": 700000, "status": "authorized", "auto_capture_limit": 500000, "approval_limit": 1000000},
+    )
+    body = response.json()
+    assert body["decision"]["decision_type"] == "RECOMMEND_CAPTURE"
+    assert body["policy"]["allowed"] is True
+    assert body["policy"]["requires_approval"] is True
+    assert body["policy"]["authority_level_granted"] == "PREPARE"
+
+
+def test_simulate_authorized_above_approval_band_is_blocked():
+    response = client.post(
+        _SIM_URL,
+        json={"amount": 1500000, "status": "authorized", "auto_capture_limit": 500000, "approval_limit": 1000000},
+    )
+    body = response.json()
+    assert body["decision"]["decision_type"] == "RECOMMEND_CAPTURE"
+    assert body["policy"]["allowed"] is False
+    assert body["policy"]["authority_level_granted"] == "FORBIDDEN"
+
+
+def test_simulate_already_captured_is_no_action_and_skips_policy():
+    response = client.post(
+        _SIM_URL,
+        json={"amount": 50000, "status": "captured", "auto_capture_limit": 500000, "approval_limit": 1000000},
+    )
+    body = response.json()
+    assert body["decision"]["decision_type"] == "NO_ACTION"
+    assert body["policy"] is None
+    assert body["policy_skipped_reason"] is not None
+
+
+def test_simulate_never_touches_the_database(monkeypatch):
+    # No get_db override, no repository monkeypatch -- if this endpoint
+    # tried to open a real connection it would raise (no DATABASE_URL in
+    # the test environment). A 200 here IS the proof it never tries.
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    response = client.post(
+        _SIM_URL,
+        json={"amount": 50000, "status": "authorized", "auto_capture_limit": 500000, "approval_limit": 1000000},
+    )
+    assert response.status_code == 200
+
+
+def test_simulate_rejects_negative_amount():
+    response = client.post(
+        _SIM_URL,
+        json={"amount": -1, "status": "authorized", "auto_capture_limit": 500000, "approval_limit": 1000000},
+    )
+    assert response.status_code == 422

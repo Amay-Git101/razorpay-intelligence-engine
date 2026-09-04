@@ -7,6 +7,7 @@
     GET  /orders/{order_id}
     GET  /orders/{order_id}/timeline
     POST /merchants/{merchant_id}/orders/{order_id}/reconcile
+    POST /decision-lab/simulate
 
 Run locally with:
     .venv/Scripts/python -m uvicorn api.app:app --reload
@@ -61,6 +62,7 @@ from observability.metrics import (
     verified_captured_amount,
 )
 from pipeline.orchestration import UnresolvedEventError, run_reconciliation_pipeline
+from pipeline.simulation import simulate_decision
 from razorpay_client.client import RazorpayReadClient
 from razorpay_client.errors import RazorpayAPIError
 from repository.actions import get_action_for_decision
@@ -87,6 +89,10 @@ from .schemas import (
     PaymentAttemptSummary,
     PolicySummary,
     ReconcileResponse,
+    SimulationDecisionSummary,
+    SimulationPolicySummary,
+    SimulationRequest,
+    SimulationResponse,
 )
 
 app = FastAPI(
@@ -303,6 +309,41 @@ def reconcile(merchant_id: str, order_id: str, conn: psycopg.Connection = Depend
         read_client.close()
 
     return ReconcileResponse(order_id=result.order_id, new_event_count=result.new_event_count, events=result.events)
+
+
+@app.post("/decision-lab/simulate", response_model=SimulationResponse)
+def decision_lab_simulate(request: SimulationRequest) -> SimulationResponse:
+    """Side-effect-free: runs the real RuleBasedEngine + policy engine
+    against a synthetic, in-memory scenario (see pipeline/simulation.py).
+    No database connection, no Razorpay call -- this endpoint works even
+    without DATABASE_URL configured, and can never move money."""
+    result = simulate_decision(
+        amount=request.amount, status=request.status,
+        auto_capture_limit=request.auto_capture_limit,
+        approval_limit=request.approval_limit,
+    )
+    policy = (
+        SimulationPolicySummary(
+            policy_version=result.policy.policy_version,
+            allowed=result.policy.allowed,
+            authority_level_granted=result.policy.authority_level_granted,
+            requires_approval=result.policy.requires_approval,
+            reason_codes=result.policy.reason_codes,
+        )
+        if result.policy is not None
+        else None
+    )
+    return SimulationResponse(
+        input=request,
+        decision=SimulationDecisionSummary(
+            decision_type=result.decision.decision_type.value,
+            confidence=result.decision.confidence,
+            reason_codes=result.decision.reason_codes,
+            model_version=result.decision.model_version,
+        ),
+        policy=policy,
+        policy_skipped_reason=result.policy_skipped_reason,
+    )
 
 
 # Static frontend (apps/web/) -- plain HTML/CSS/JS, no build step. Mounted

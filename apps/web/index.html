@@ -3,22 +3,22 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="color-scheme" content="dark" />
-  <title>Decision Intelligence Console — Razorpay Payment Recovery</title>
-  <meta name="description" content="Watch a real Razorpay Test Mode payment move through an explainable recovery pipeline: observed, reasoned about, policy-gated, acted on, and independently verified." />
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%230b0d12'/%3E%3Cpath d='M28 70 L28 30 L50 30 Q64 30 64 44 Q64 56 50 56 L38 56 L72 70' stroke='%235b8cff' stroke-width='8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+  <meta name="color-scheme" content="light" />
+  <title>Payment Recovery Lab — Razorpay Decision Intelligence</title>
+  <meta name="description" content="A Razorpay Test Mode payment is authorized but not captured. Run the recovery and watch a real decision engine observe, reason, apply merchant policy, act, and independently verify the outcome -- or try your own scenario." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%232f6fed'/%3E%3Cpath d='M28 70 L28 30 L50 30 Q64 30 64 44 Q64 56 50 56 L38 56 L72 70' stroke='white' stroke-width='8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
   <header class="site-header">
-    <a href="#" class="brand" aria-label="Decision Intelligence — home">
+    <a href="#" class="brand" aria-label="Payment Recovery Lab — home">
       <span class="brand-mark" aria-hidden="true">◆</span>
-      <span class="brand-name">Decision Intelligence</span>
+      <span class="brand-name">Payment Recovery Lab</span>
     </a>
     <nav class="site-nav" aria-label="Primary">
-      <a href="#recovery">The recovery</a>
-      <a href="#audit">Audit trail</a>
-      <a href="#judgment">Why deterministic</a>
+      <a href="#recovery">Run the recovery</a>
+      <a href="#lab">Try a scenario</a>
+      <a href="#proof">Live proof</a>
       <a href="#console">Console</a>
       <a href="https://github.com/" target="_blank" rel="noopener" class="nav-github">GitHub ↗</a>
     </nav>
@@ -41,202 +41,145 @@
       <!-- ============ HERO ============ -->
       <section class="hero">
         <div class="hero-copy">
-          <span class="eyebrow">Razorpay Buildathon &middot; Test Mode integration</span>
+          <span class="eyebrow">Razorpay Buildathon &middot; live Test Mode integration</span>
           <h1 class="hero-title">Your payment was authorized.<br />Now what?</h1>
           <p class="hero-sub">
-            We built a payment decision and recovery engine that observes payment state, reasons
-            about recovery, applies merchant policy, acts through Razorpay, and independently
-            verifies the outcome.
+            See how a payment decision engine observes the state, reasons about recovery, applies
+            merchant policy, acts through Razorpay, and independently verifies the outcome.
           </p>
           <div class="hero-ctas">
-            <button type="button" class="btn btn-primary" id="watch-recovery-btn">Watch the recovery</button>
-            <a href="#console" class="btn btn-secondary">Explore the console</a>
+            <button type="button" class="btn btn-primary" id="hero-run-btn">Run the recovery</button>
+            <a href="#lab" class="btn btn-secondary">Try a scenario</a>
           </div>
-          <p class="hero-note">
-            <span class="dot-live" aria-hidden="true"></span>
-            Razorpay <strong>Test Mode</strong> &middot; real API + database &middot; no mock payment result
+        </div>
+
+        <div class="razorpay-object" id="hero-payment-object">
+          <div class="razorpay-object-head">
+            <span class="rzp-chip">RAZORPAY TEST MODE</span>
+          </div>
+          <div class="razorpay-object-amount" data-el="hero-amount">&hellip;</div>
+          <div class="razorpay-object-row">
+            <span class="razorpay-object-status" data-el="hero-status">&hellip;</span>
+            <span class="razorpay-object-captured" data-el="hero-captured"></span>
+          </div>
+          <div class="razorpay-object-ids">
+            <div><span class="ro-label">Order</span><span class="ro-val" data-el="hero-order-id">&hellip;</span></div>
+            <div><span class="ro-label">Payment</span><span class="ro-val" data-el="hero-payment-id">&hellip;</span></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ LIVE RECOVERY ============ -->
+      <section id="recovery" class="landing-section">
+        <div class="section-head">
+          <span class="section-kicker">Live &middot; real API + database</span>
+          <h2 class="section-title">Watch the payment move</h2>
+          <p class="section-lede">
+            This runs against the real order shown above: it calls the live reconciliation API, then
+            renders exactly what the backend returns. Nothing here is a canned animation.
           </p>
         </div>
 
-        <div class="payment-object" id="hero-payment-object" aria-label="Payment: 500 rupees, authorized, not captured">
-          <div class="payment-object-glow" aria-hidden="true"></div>
-          <span class="payment-object-label">Razorpay payment</span>
-          <span class="payment-object-amount">₹500.00</span>
-          <span class="payment-object-status badge-status-authorized">AUTHORIZED</span>
-          <span class="payment-object-captured">CAPTURED: <strong>NO</strong></span>
+        <div class="run-bar">
+          <button type="button" class="btn btn-primary" id="recovery-run-btn">Run the recovery</button>
+          <span id="recovery-status" class="run-status" aria-live="polite"></span>
         </div>
+        <div id="recovery-error" class="error-state hidden"></div>
+
+        <div id="recovery-pipeline" class="pipeline-grid"></div>
       </section>
 
-      <!-- ============ INTERACTIVE RECOVERY ============ -->
-      <section id="recovery" class="recovery-section">
-        <div class="recovery-intro">
-          <h2 class="section-title">Watch the recovery</h2>
-          <p class="section-lede">Scroll, or press play — one real payment, moving through every stage of the pipeline.</p>
-          <div id="recovery-data-error" class="error-state hidden"></div>
+      <!-- ============ TRY A SCENARIO ============ -->
+      <section id="lab" class="landing-section landing-section-alt">
+        <div class="section-head">
+          <span class="section-kicker section-kicker-sim">Simulation &middot; no money movement</span>
+          <h2 class="section-title">Try a scenario</h2>
+          <p class="section-lede">
+            Set up a hypothetical payment and run it through the real decision and policy engines.
+            This never touches Razorpay or the database -- it is a pure, synthetic what-if.
+          </p>
         </div>
 
-        <div class="recovery-layout">
-          <!-- sticky rail: progress + stage nav + transport controls -->
-          <aside class="recovery-rail" aria-label="Recovery pipeline navigation">
-            <div class="progress-track" aria-hidden="true"><div class="progress-fill" id="progress-fill"></div></div>
-            <ol class="stage-nav" id="stage-nav">
-              <li><button type="button" class="stage-nav-btn" data-target="observe"><span class="stage-nav-dot"></span>Observe</button></li>
-              <li><button type="button" class="stage-nav-btn" data-target="reason"><span class="stage-nav-dot"></span>Reason</button></li>
-              <li><button type="button" class="stage-nav-btn" data-target="authorize"><span class="stage-nav-dot"></span>Authorize</button></li>
-              <li><button type="button" class="stage-nav-btn" data-target="act"><span class="stage-nav-dot"></span>Act</button></li>
-              <li><button type="button" class="stage-nav-btn" data-target="verify"><span class="stage-nav-dot"></span>Verify</button></li>
-              <li><button type="button" class="stage-nav-btn" data-target="recovered"><span class="stage-nav-dot"></span>Recovered</button></li>
-            </ol>
-            <div class="transport-controls">
-              <button type="button" id="transport-play" class="transport-btn">▶ Play</button>
-              <button type="button" id="transport-pause" class="transport-btn" disabled>&#10073;&#10073; Pause</button>
-              <button type="button" id="transport-replay" class="transport-btn">↺ Replay</button>
-            </div>
-          </aside>
+        <div class="lab-presets">
+          <button type="button" class="chip-btn" data-preset="capture">Capture this payment</button>
+          <button type="button" class="chip-btn" data-preset="approval">Needs approval</button>
+          <button type="button" class="chip-btn" data-preset="blocked">Blocked</button>
+          <button type="button" class="chip-btn" data-preset="already">Already captured</button>
+        </div>
 
-          <!-- scenes -->
-          <div class="scene-stack" id="scene-stack">
+        <div class="lab-form">
+          <label class="lab-field">
+            <span>Amount (₹)</span>
+            <input type="number" id="lab-amount" value="500" min="0" step="1" />
+          </label>
+          <label class="lab-field">
+            <span>Payment state (Razorpay)</span>
+            <select id="lab-status">
+              <option value="authorized" selected>Authorized, not captured</option>
+              <option value="captured">Already captured</option>
+              <option value="failed">Failed</option>
+            </select>
+          </label>
+          <label class="lab-field">
+            <span>Merchant auto-capture limit (₹)</span>
+            <input type="number" id="lab-auto-limit" value="5000" min="0" step="1" />
+          </label>
+          <label class="lab-field">
+            <span>Approval band upper limit (₹)</span>
+            <input type="number" id="lab-approval-limit" value="10000" min="0" step="1" />
+          </label>
+          <button type="button" class="btn btn-primary lab-submit" id="lab-run-btn">Test this scenario</button>
+        </div>
+        <div id="lab-error" class="error-state hidden"></div>
 
-            <section class="scene" data-stage="observe">
-              <div class="scene-visual">
-                <div class="scene-chip scene-chip-source">Razorpay</div>
-                <div class="scene-arrow-in" aria-hidden="true">↓</div>
-                <div class="scene-payment-card" data-el="observe-payment-card">
-                  <span class="scene-payment-label">Payment</span>
-                  <span class="scene-payment-amount" data-el="observe-amount">—</span>
-                  <span class="scene-payment-status" data-el="observe-status">—</span>
-                  <span class="scene-payment-captured" data-el="observe-captured">—</span>
-                </div>
-              </div>
-              <div class="scene-copy">
-                <span class="scene-kicker">01 &middot; Observe</span>
-                <p class="scene-plain" data-el="observe-plain">The payment is authorized, but the merchant does not have a captured payment yet.</p>
-                <button type="button" class="detail-toggle" data-detail="observe-detail">Technical detail ▸</button>
-                <div class="detail-panel hidden" id="observe-detail" data-el="observe-detail-body"></div>
-              </div>
-            </section>
+        <div id="lab-pipeline" class="pipeline-grid"></div>
+      </section>
 
-            <section class="scene" data-stage="reason">
-              <div class="scene-visual">
-                <div class="decision-scan" data-el="reason-scan">
-                  <div class="scan-row" data-el="scan-row-1">✓ AUTHORIZED</div>
-                  <div class="scan-row" data-el="scan-row-2">✓ NOT CAPTURED</div>
-                  <div class="scan-row" data-el="scan-row-3">✓ <span data-el="reason-amount">₹500</span></div>
-                </div>
-                <div class="scan-status" data-el="reason-evaluating">EVALUATING&hellip;</div>
-                <div class="scan-result hidden" data-el="reason-result">RECOMMEND_CAPTURE</div>
-              </div>
-              <div class="scene-copy">
-                <span class="scene-kicker">02 &middot; Reason</span>
-                <p class="scene-plain" data-el="reason-plain">The engine recommends capturing the authorized payment.</p>
-                <button type="button" class="detail-toggle" data-detail="reason-detail">Technical detail ▸</button>
-                <div class="detail-panel hidden" id="reason-detail" data-el="reason-detail-body"></div>
-              </div>
-            </section>
+      <!-- ============ LIVE PROOF ============ -->
+      <section id="proof" class="landing-section">
+        <div class="section-head">
+          <span class="section-kicker">Real transaction</span>
+          <h2 class="section-title">Real Razorpay Test Mode transaction.</h2>
+          <p class="section-lede">Read from the live API and database. Not a screenshot. Not a fixture.</p>
+        </div>
+        <div id="proof-loading" class="loading-state">Loading&hellip;</div>
+        <div id="proof-error" class="error-state hidden"></div>
+        <div id="proof-card" class="proof-panel hidden"></div>
+      </section>
 
-            <section class="scene" data-stage="authorize">
-              <div class="scene-visual">
-                <div class="policy-gate">
-                  <div class="policy-gate-in" data-el="authorize-decision">RECOMMEND_CAPTURE</div>
-                  <div class="scene-arrow-in" aria-hidden="true">↓</div>
-                  <div class="policy-gate-box">
-                    <span class="policy-gate-label">POLICY</span>
-                    <div class="policy-band">
-                      <span class="policy-band-label" data-el="authorize-limit">Auto-capture limit: —</span>
-                      <div class="policy-band-track">
-                        <div class="policy-band-marker" data-el="authorize-marker"></div>
-                      </div>
-                      <span class="policy-band-value" data-el="authorize-amount">Payment: —</span>
-                    </div>
-                    <div class="policy-gate-result hidden" data-el="authorize-result">✓ ALLOW</div>
-                  </div>
-                </div>
-              </div>
-              <div class="scene-copy">
-                <span class="scene-kicker">03 &middot; Authorize / Policy</span>
-                <p class="scene-plain" data-el="authorize-plain">This merchant allows automatic capture for payments within its configured limit.</p>
-                <p class="scene-callout">Decision ≠ permission. The engine can recommend — policy decides whether the system may act.</p>
-                <button type="button" class="detail-toggle" data-detail="authorize-detail">Technical detail ▸</button>
-                <div class="detail-panel hidden" id="authorize-detail" data-el="authorize-detail-body"></div>
-              </div>
-            </section>
-
-            <section class="scene" data-stage="act">
-              <div class="scene-visual">
-                <div class="transfer-row">
-                  <div class="transfer-node">Our engine<br /><span data-el="act-action-type">CAPTURE_PAYMENT</span></div>
-                  <div class="transfer-line" data-el="act-line">
-                    <span class="transfer-packet" data-el="act-packet"></span>
-                  </div>
-                  <div class="transfer-node transfer-node-razorpay">Razorpay<br /><span data-el="act-amount">₹500</span></div>
-                </div>
-                <div class="scan-status" data-el="act-inflight">CAPTURING&hellip;</div>
-                <div class="scan-result hidden" data-el="act-result">✓ CAPTURED</div>
-              </div>
-              <div class="scene-copy">
-                <span class="scene-kicker">04 &middot; Act</span>
-                <p class="scene-plain" data-el="act-plain">The permitted action was sent through Razorpay's capture write path.</p>
-                <button type="button" class="detail-toggle" data-detail="act-detail">Technical detail ▸</button>
-                <div class="detail-panel hidden" id="act-detail" data-el="act-detail-body"></div>
-              </div>
-            </section>
-
-            <section class="scene" data-stage="verify">
-              <div class="scene-visual">
-                <div class="verify-caveat">Action completed. But we don't trust the write response alone.</div>
-                <div class="transfer-row">
-                  <div class="transfer-node">Our system</div>
-                  <div class="transfer-line" data-el="verify-line-out">
-                    <span class="transfer-packet" data-el="verify-packet-out"></span>
-                  </div>
-                  <div class="transfer-node transfer-node-razorpay">Razorpay<br /><span class="transfer-sub">status? amount?</span></div>
-                </div>
-                <div class="transfer-row transfer-row-reverse hidden" data-el="verify-response-row">
-                  <div class="transfer-node">Our system</div>
-                  <div class="transfer-line" data-el="verify-line-in">
-                    <span class="transfer-packet" data-el="verify-packet-in"></span>
-                  </div>
-                  <div class="transfer-node transfer-node-razorpay">Razorpay<br /><span class="transfer-sub" data-el="verify-response-sub">captured = true</span></div>
-                </div>
-                <div class="scan-result hidden" data-el="verify-result">✓ VERIFIED_SUCCESS</div>
-              </div>
-              <div class="scene-copy">
-                <span class="scene-kicker">05 &middot; Verify</span>
-                <p class="scene-plain" data-el="verify-plain">We independently re-read Razorpay and confirmed the payment is actually captured.</p>
-                <button type="button" class="detail-toggle" data-detail="verify-detail">Technical detail ▸</button>
-                <div class="detail-panel hidden" id="verify-detail" data-el="verify-detail-body"></div>
-              </div>
-            </section>
-
-            <section class="scene scene-final" data-stage="recovered">
-              <div class="scene-visual">
-                <div class="result-badge" data-el="result-badge">✓ VERIFIED SUCCESS</div>
-                <div class="result-amount" data-el="result-amount">₹500.00</div>
-                <div class="result-sub">RECOVERED</div>
-                <div class="result-chain" data-el="result-chain"></div>
-              </div>
-              <div class="scene-copy">
-                <span class="scene-kicker">Result</span>
-                <p class="scene-plain">The full pipeline resolved end to end, on a real Razorpay Test Mode transaction.</p>
-                <a href="#audit" class="btn btn-secondary btn-small">See the full audit trail</a>
-              </div>
-            </section>
-
+      <!-- ============ FAILURE RECOVERY ============ -->
+      <section id="failure-recovery" class="landing-section landing-section-alt">
+        <div class="section-head">
+          <span class="section-kicker">Engineering evidence</span>
+          <h2 class="section-title">What broke, and how we got out</h2>
+          <p class="section-lede">Step through the actual incident.</p>
+        </div>
+        <div class="incident-stepper" id="incident-stepper">
+          <div class="incident-steps" id="incident-steps"></div>
+          <div class="incident-controls">
+            <button type="button" id="incident-prev" class="transport-btn">&larr; Back</button>
+            <div class="incident-dots" id="incident-dots"></div>
+            <button type="button" id="incident-next" class="transport-btn">Next &rarr;</button>
           </div>
         </div>
       </section>
 
-      <!-- ============ AUDIT TRAIL (proof chain) ============ -->
+      <!-- ============ AUDIT TRAIL ============ -->
       <section id="audit" class="landing-section">
-        <h2 class="section-title">Audit trail — the proof chain</h2>
-        <p class="section-lede">Every checkpoint below was written by the backend as it happened. Click one to see what it means and its raw payload.</p>
-        <div id="landing-audit-loading" class="loading-state hidden">Loading audit trail&hellip;</div>
+        <div class="section-head">
+          <span class="section-kicker">Proof chain</span>
+          <h2 class="section-title">Every decision leaves a proof chain.</h2>
+          <p class="section-lede">Click a checkpoint to see what it means and its real backend payload.</p>
+        </div>
         <ol class="proof-audit" id="proof-audit"></ol>
       </section>
 
-      <!-- ============ AI JUDGMENT ============ -->
-      <section id="judgment" class="landing-section">
-        <h2 class="section-title">Why a deterministic engine?</h2>
+      <!-- ============ ENGINEERING: WHY DETERMINISTIC ============ -->
+      <section id="judgment" class="landing-section landing-section-alt">
+        <div class="section-head">
+          <span class="section-kicker">Engineering detail</span>
+          <h2 class="section-title">Why a deterministic engine?</h2>
+        </div>
         <div class="judgment-grid">
           <div class="judgment-panel">
             <span class="judgment-tag">V1 &middot; deterministic rule engine &middot; <code>rule_v1</code></span>
@@ -254,28 +197,14 @@
             <span class="judgment-tag judgment-tag-muted">Future direction &mdash; not yet built</span>
             <div class="future-path">
               <span>Verified outcomes</span>
-              <span class="future-arrow">↓</span>
+              <span class="future-arrow">→</span>
               <span>Historical data</span>
-              <span class="future-arrow">↓</span>
+              <span class="future-arrow">→</span>
               <span>Calibrated decision intelligence</span>
-              <span class="future-arrow">↓</span>
+              <span class="future-arrow">→</span>
               <span>Better recommendations</span>
             </div>
             <p class="judgment-caveat">This is a stated direction, not a current capability. Nothing here is ML or a fitted/learned model.</p>
-          </div>
-        </div>
-      </section>
-
-      <!-- ============ FAILURE RECOVERY ============ -->
-      <section id="failure-recovery" class="landing-section">
-        <h2 class="section-title">What broke, and how we got out</h2>
-        <p class="section-lede">Step through the actual incident.</p>
-        <div class="incident-stepper" id="incident-stepper">
-          <div class="incident-steps" id="incident-steps"></div>
-          <div class="incident-controls">
-            <button type="button" id="incident-prev" class="transport-btn">&larr; Back</button>
-            <div class="incident-dots" id="incident-dots"></div>
-            <button type="button" id="incident-next" class="transport-btn">Next &rarr;</button>
           </div>
         </div>
       </section>
@@ -284,7 +213,7 @@
       <footer class="site-footer">
         <div class="footer-transition">
           <span>Want to inspect every decision?</span>
-          <a href="#console" class="btn btn-primary btn-small">Enter decision console →</a>
+          <a href="#console" class="btn btn-primary btn-small">Open decision console →</a>
         </div>
       </footer>
     </section>
@@ -293,7 +222,7 @@
     <section id="dashboard-view" class="view hidden">
       <div class="console-intro">
         <h2 class="section-title">Decision Intelligence Console</h2>
-        <p class="section-lede">The control room. Live merchant data, read directly from the API &mdash; nothing here is precomputed for demo purposes.</p>
+        <p class="section-lede">The deep-dive destination for technical judges. Live merchant data, read directly from the API.</p>
       </div>
       <div id="dashboard-loading" class="loading-state">Loading dashboard&hellip;</div>
       <div id="dashboard-error" class="error-state hidden"></div>
