@@ -41,11 +41,13 @@ string -- never a raw exception, traceback, or object repr().
 from __future__ import annotations
 
 import uuid as uuid_module
+from pathlib import Path
 from typing import Any, Iterator
 
 import psycopg
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from db.connection import get_connection
 from observability.metrics import (
@@ -301,3 +303,13 @@ def reconcile(merchant_id: str, order_id: str, conn: psycopg.Connection = Depend
         read_client.close()
 
     return ReconcileResponse(order_id=result.order_id, new_event_count=result.new_event_count, events=result.events)
+
+
+# Static frontend (apps/web/) -- plain HTML/CSS/JS, no build step. Mounted
+# last, at "/", so it never shadows the API routes above: FastAPI/Starlette
+# try explicit path operations first, in registration order, and only fall
+# through to this mount for anything they didn't match. html=True serves
+# index.html for "/" itself. This is wiring only -- no business logic.
+_WEB_DIR = Path(__file__).resolve().parents[3] / "web"
+if _WEB_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=str(_WEB_DIR), html=True), name="frontend")

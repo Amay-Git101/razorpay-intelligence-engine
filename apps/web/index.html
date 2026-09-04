@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Decision Intelligence Console</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <h1>Decision Intelligence Console</h1>
+      <p class="tagline">Contextual payment-recovery decisioning for Razorpay — observe, reason, authorize, act, verify.</p>
+    </div>
+    <div class="header-meta">
+      <div class="merchant-block">
+        <span class="label">Merchant</span>
+        <span id="merchant-name" class="merchant-name">—</span>
+      </div>
+      <div id="health-indicator" class="health-indicator" title="API health">
+        <span class="dot"></span><span class="health-text">checking&hellip;</span>
+      </div>
+    </div>
+  </header>
+
+  <main id="app-root">
+    <!-- ================= DASHBOARD ================= -->
+    <section id="dashboard-view" class="view">
+      <div id="dashboard-loading" class="loading-state">Loading dashboard&hellip;</div>
+      <div id="dashboard-error" class="error-state hidden"></div>
+      <div id="dashboard-empty" class="empty-state hidden"></div>
+
+      <div id="dashboard-content" class="hidden">
+        <section class="metrics-section">
+          <h2 class="section-title">Observability</h2>
+          <div id="metrics-strip" class="metrics-strip"></div>
+        </section>
+
+        <section class="orders-section">
+          <h2 class="section-title">Orders</h2>
+          <div id="orders-table-wrap"></div>
+        </section>
+      </div>
+    </section>
+
+    <!-- ================= ORDER DETAIL ================= -->
+    <section id="detail-view" class="view hidden">
+      <button id="back-to-dashboard" class="link-button" type="button">&larr; Back to dashboard</button>
+
+      <div id="detail-loading" class="loading-state">Loading order&hellip;</div>
+      <div id="detail-error" class="error-state hidden"></div>
+
+      <div id="detail-content" class="hidden">
+        <div class="detail-header">
+          <div id="order-info" class="order-info"></div>
+          <div class="reconcile-controls">
+            <button id="reconcile-btn" type="button">Reconcile Order</button>
+            <span id="reconcile-status" class="reconcile-status" aria-live="polite"></span>
+          </div>
+        </div>
+
+        <div id="reconcile-banner" class="banner hidden"></div>
+
+        <h2 class="section-title">Pipeline</h2>
+        <div id="pipeline-tracker" class="tracker"></div>
+
+        <div class="card-grid">
+          <div class="card" id="decision-card"></div>
+          <div class="card" id="policy-card"></div>
+          <div class="card" id="action-card"></div>
+          <div class="card" id="verification-card"></div>
+        </div>
+
+        <h2 class="section-title">Audit Trail</h2>
+        <div id="audit-timeline" class="audit-timeline"></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

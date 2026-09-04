@@ -317,8 +317,11 @@ def test_output_never_contains_credential_like_values(monkeypatch, capsys):
     assert "definitely_not_real" not in out
 
 
-def test_missing_credentials_message_names_the_variables_not_their_values():
+def test_missing_credentials_message_names_the_variables_not_their_values(monkeypatch):
     from razorpay_client.client import RazorpayReadClient
+
+    monkeypatch.delenv("RAZORPAY_KEY_ID", raising=False)
+    monkeypatch.delenv("RAZORPAY_KEY_SECRET", raising=False)
 
     with pytest.raises(RuntimeError) as excinfo:
         RazorpayReadClient(key_id=None, key_secret=None)

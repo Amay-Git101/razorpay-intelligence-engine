@@ -79,6 +79,13 @@ rather than relying on convention/code review alone:
     src/intelligence/, src/policy/, src/action/, src/verification/,
     src/reconciliation/, src/observability/, src/evaluation/,
     src/feedback/, src/pipeline/, or src/manual_run/ may import it.
+16. apps/web/ (the static frontend -- plain HTML/CSS/JS, not a src/
+    Python package) must contain no Razorpay credentials, no
+    DATABASE_URL, no reference to psycopg/PostgreSQL, no direct
+    Razorpay API call, and no duplicated Policy/RuleBasedEngine
+    business-rule literals -- it may only talk to the backend via the
+    existing relative-URL HTTP API. No backend module under src/ may
+    reference apps/web/.
 
 Pure Python, no DB required.
 """
@@ -89,6 +96,7 @@ import re
 from pathlib import Path
 
 SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
+WEB_ROOT = Path(__file__).resolve().parents[2] / "web"
 
 
 def _all_py_files(root: Path) -> list[Path]:
@@ -685,3 +693,69 @@ def test_production_modules_never_import_api():
     assert offenders == [], (
         f"api/ is a leaf delivery layer -- no existing backend module may import it: {offenders}"
     )
+
+
+# ---------------------------------------------------------------------------
+# apps/web/ (static frontend) boundaries
+# ---------------------------------------------------------------------------
+
+def _all_web_files() -> list[Path]:
+    return [p for p in WEB_ROOT.rglob("*") if p.is_file()]
+
+
+def test_frontend_contains_no_razorpay_or_database_credentials():
+    forbidden = ("RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET", "DATABASE_URL", "postgresql://", "sk_live", "rzp_live")
+    offenders = []
+    for path in _all_web_files():
+        text = path.read_text(encoding="utf-8")
+        for forbidden_token in forbidden:
+            if forbidden_token in text:
+                offenders.append(f"{path.relative_to(WEB_ROOT)}: {forbidden_token}")
+    assert offenders == [], f"apps/web/ must never contain a credential-bearing value: {offenders}"
+
+
+def test_frontend_never_accesses_postgres_directly():
+    offenders = []
+    for path in _all_web_files():
+        text = path.read_text(encoding="utf-8").lower()
+        for forbidden_token in ("psycopg", "postgres"):
+            if forbidden_token in text:
+                offenders.append(f"{path.relative_to(WEB_ROOT)}: {forbidden_token}")
+    assert offenders == [], f"apps/web/ must never access PostgreSQL directly: {offenders}"
+
+
+def test_frontend_never_calls_razorpay_directly():
+    offenders = []
+    for path in _all_web_files():
+        text = path.read_text(encoding="utf-8").lower()
+        if "api.razorpay.com" in text or "checkout.razorpay.com" in text:
+            offenders.append(str(path.relative_to(WEB_ROOT)))
+    assert offenders == [], f"apps/web/ must talk only to the existing backend API, never Razorpay directly: {offenders}"
+
+
+def test_frontend_does_not_duplicate_policy_or_engine_business_rules():
+    forbidden_business_rule_literals = (
+        "max_auto_capture_amount", "approval_band_upper", "AMOUNT_EXCEEDS_HARD_LIMIT",
+        "AUTHORIZED_PAYMENT_ELIGIBLE_FOR_CAPTURE", "GATEWAY_SIDE_FAILURE", "MAX_ATTEMPTS_REACHED",
+    )
+    offenders = []
+    for path in _all_web_files():
+        text = path.read_text(encoding="utf-8")
+        for literal in forbidden_business_rule_literals:
+            if literal in text:
+                offenders.append(f"{path.relative_to(WEB_ROOT)}: {literal}")
+    assert offenders == [], f"apps/web/ must not duplicate backend business-rule literals: {offenders}"
+
+
+def test_only_api_app_mounts_the_static_frontend():
+    # api/app.py's StaticFiles mount is the one deliberate, approved
+    # place the frontend directory is wired in -- nothing else under
+    # src/ should reference StaticFiles or the frontend at all.
+    offenders = []
+    for path in _all_py_files(SRC_ROOT):
+        if path == SRC_ROOT / "api" / "app.py":
+            continue
+        text = path.read_text(encoding="utf-8")
+        if "StaticFiles" in text:
+            offenders.append(str(path.relative_to(SRC_ROOT)))
+    assert offenders == [], f"only api/app.py may mount the static frontend: {offenders}"

@@ -1,0 +1,90 @@
+﻿<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Razorpay Buildathon Test Payment</title>
+    <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            background: #f5f5f5;
+        }
+        .box {
+            background: white;
+            padding: 40px;
+            border-radius: 12px;
+            text-align: center;
+            box-shadow: 0 4px 20px rgba(0,0,0,.1);
+        }
+        button {
+            padding: 14px 28px;
+            border: 0;
+            border-radius: 8px;
+            background: #3399cc;
+            color: white;
+            font-size: 16px;
+            cursor: pointer;
+        }
+        code {
+            display: block;
+            margin: 15px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h2>Razorpay Test Payment</h2>
+        <p>Buildathon live-demo transaction</p>
+        <p><strong>Amount: ₹500</strong></p>
+        <code>order_TXueleNMbhnp2s</code>
+        <button id="pay">Pay ₹500</button>
+        <p id="result"></p>
+    </div>
+
+    <script>
+        const options = {
+            key: "rzp_test_TUtQ3B5L6SYJ1k",
+            amount: "50000",
+            currency: "INR",
+            name: "Razorpay Buildathon",
+            description: "Buildathon live-demo transaction",
+            order_id: "order_TXueleNMbhnp2s",
+
+            handler: function (response) {
+                document.getElementById("result").innerHTML =
+                    "<strong>Payment successful</strong><br>" +
+                    "Payment ID: " + response.razorpay_payment_id;
+                console.log(response);
+            },
+
+            prefill: {
+                name: "Buildathon Demo",
+                email: "demo@example.com",
+                contact: "9000090000"
+            },
+
+            theme: {
+                color: "#3399cc"
+            }
+        };
+
+        const rzp = new Razorpay(options);
+
+        rzp.on("payment.failed", function (response) {
+            document.getElementById("result").innerHTML =
+                "<strong>Payment failed</strong><br>" +
+                response.error.description;
+        });
+
+        document.getElementById("pay").onclick = function (e) {
+            rzp.open();
+            e.preventDefault();
+        };
+    </script>
+</body>
+</html>
