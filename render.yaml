@@ -1,22 +1,40 @@
-# Render.com Blueprint for the FastAPI app (apps/api), which also serves
-# the static frontend (apps/web/) via StaticFiles -- one deployed service
-# for the whole product. See README.md "Public deployment" for the exact
-# steps and the required environment variables. This file only describes
-# the deployment; it commits no credentials and triggers nothing on its
-# own -- Render only acts on it once you connect the repo yourself.
+# Render Blueprint for the FastAPI app (apps/api), which also serves the
+# static frontend (apps/web/) via StaticFiles -- one deployed service for
+# the whole product.
+#
+# This file only DESCRIBES the deployment. It commits no credentials and
+# triggers nothing on its own: Render acts on it only once you connect the
+# repository yourself, and the three secrets below must be entered in
+# Render's dashboard.
 services:
   - type: web
     name: razorpay-decision-intelligence
     runtime: python
     plan: free
     rootDir: apps/api
-    buildCommand: pip install -e .
+
+    # Migrations run on every deploy. run_migrations tracks what it has
+    # already applied in schema_migrations, so this is idempotent against
+    # a database that is already up to date, and a fresh database becomes
+    # usable without a manual step. A failed migration fails the build,
+    # which is the right way round -- better than booting a service whose
+    # schema does not match its code.
+    buildCommand: pip install -e . && python -m db.run_migrations
     startCommand: uvicorn api.app:app --host 0.0.0.0 --port $PORT
+
     envVars:
+      # sync: false means "prompt me for this in the dashboard, and never
+      # store it in the repo". All three are secrets or environment-
+      # specific; none of them belongs in git.
       - key: DATABASE_URL
         sync: false
+      # Test Mode credentials only. The key id reaches the browser via
+      # /checkout-config, which refuses to serve anything that is not an
+      # rzp_test_ key. The secret is never sent to the browser by any
+      # endpoint.
       - key: RAZORPAY_KEY_ID
         sync: false
       - key: RAZORPAY_KEY_SECRET
         sync: false
+
     healthCheckPath: /health
