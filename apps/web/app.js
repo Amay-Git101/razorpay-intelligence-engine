@@ -101,12 +101,60 @@ async function resolveMerchant() {
 // Views
 // ---------------------------------------------------------------------------
 
+/**
+ * Razorpay's mark, drawn rather than fetched: the same shape as this page's
+ * icon, as a stroked path so it can draw itself in. Purely decorative --
+ * it is aria-hidden and carries no information.
+ */
+function razorpayMark() {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "hero-mark");
+  svg.setAttribute("viewBox", "0 0 100 100");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", "M26 68 L26 32 L52 32 Q66 32 66 46 Q66 58 52 58 L38 58 L74 68");
+  path.setAttribute("fill", "none");
+  path.setAttribute("stroke-width", "9");
+  path.setAttribute("stroke-linecap", "round");
+  path.setAttribute("stroke-linejoin", "round");
+  svg.appendChild(path);
+  return svg;
+}
+
 function renderLanding() {
   const wrap = el("div", "landing");
 
   const hero = el("section", "hero");
-  hero.appendChild(el("h1", "hero-title", "What payment problem do you want to test?"));
-  hero.appendChild(
+
+  // Decoration, all of it aria-hidden and none of it carrying meaning: a
+  // ruled grid, a glow that follows the pointer, and Razorpay's mark drawn
+  // as a stroke. Nothing here says anything, so nothing here can say
+  // anything untrue.
+  hero.appendChild(el("div", "hero-grid")).setAttribute("aria-hidden", "true");
+  const glow = el("div", "hero-glow");
+  glow.setAttribute("aria-hidden", "true");
+  hero.appendChild(glow);
+  hero.appendChild(razorpayMark());
+
+  const body = el("div", "hero-body");
+  // Two-tone headline: the subject of the page is the coloured half.
+  const title = el("h1", "hero-title", "What ");
+  title.appendChild(el("em", null, "payment problem"));
+  title.appendChild(document.createTextNode(" do you want to test?"));
+  body.appendChild(title);
+  hero.appendChild(body);
+
+  // The glow tracks the pointer through two custom properties. Pointer
+  // position is the only thing it knows.
+  hero.addEventListener("pointermove", (event) => {
+    const box = hero.getBoundingClientRect();
+    hero.style.setProperty("--mx", `${event.clientX - box.left}px`);
+    hero.style.setProperty("--my", `${event.clientY - box.top}px`);
+  });
+  hero.addEventListener("pointerleave", () => hero.classList.remove("is-lit"));
+  hero.addEventListener("pointerenter", () => hero.classList.add("is-lit"));
+  body.appendChild(
     el(
       "p",
       "hero-sub",
@@ -115,14 +163,41 @@ function renderLanding() {
   );
   wrap.appendChild(hero);
 
+  // FAILS OPEN, for the same reason the scroll reveals in lib/live.js do.
+  // The entrance animations start from opacity 0, so anything that stops
+  // them running -- a throttled background tab, an embedded browser that
+  // does not animate -- would leave the page blank. This forces the
+  // finished state shortly after arrival regardless of what ran.
+  setTimeout(() => wrap.classList.add("is-settled"), 1500);
+
   const grid = el("div", "problem-grid");
-  PROBLEMS.forEach((problem) => {
+  PROBLEMS.forEach((problem, index) => {
     const card = el("a", "problem-card");
     card.href = `#/problem/${problem.id}`;
     card.appendChild(el("span", "problem-number", problem.number));
     card.appendChild(el("h2", "problem-question", problem.question));
     card.appendChild(el("p", "problem-summary", problem.doing));
     card.appendChild(el("span", "problem-go", "Start →"));
+
+    // The card leans towards the pointer and lights up under it. Both are
+    // driven by pointer position alone.
+    card.addEventListener("pointermove", (event) => {
+      const box = card.getBoundingClientRect();
+      const px = (event.clientX - box.left) / box.width;
+      const py = (event.clientY - box.top) / box.height;
+      card.style.setProperty("--mx", `${px * 100}%`);
+      card.style.setProperty("--my", `${py * 100}%`);
+      card.style.setProperty("--tilt-y", `${(px - 0.5) * 7}deg`);
+      card.style.setProperty("--tilt-x", `${(0.5 - py) * 7}deg`);
+    });
+    card.addEventListener("pointerleave", () => {
+      card.style.setProperty("--tilt-y", "0deg");
+      card.style.setProperty("--tilt-x", "0deg");
+    });
+
+    // Entrance stagger. Presentation of static content, so a delay is the
+    // right tool here -- unlike anything describing backend state.
+    card.style.setProperty("--enter-delay", `${index * 70}ms`);
     grid.appendChild(card);
   });
   wrap.appendChild(grid);

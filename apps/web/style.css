@@ -1,36 +1,60 @@
 /* Payment infrastructure, not a marketing site.
-   One palette, strong type, restrained colour. Colour is reserved for
-   payment and decision state, so when something is green it means
-   something. */
+
+   The palette, type scale and card treatment follow the Resume Builder
+   design language: a white ground, one blue, slate greys for everything
+   said quietly, a serif for the few headings that carry a page, and soft
+   1px borders instead of heavy chrome.
+
+   The one thing not borrowed is status colour. Green, amber and red mean
+   captured, held and failed here, so they stay legible as text rather
+   than being tuned for looks. */
 
 :root {
-  --bg: #f6f7f9;
+  --bg: #ffffff;
   --surface: #ffffff;
-  --surface-sunken: #f0f2f6;
-  --line: #e4e7ec;
-  --line-strong: #cfd4dd;
+  --surface-sunken: #f8fafc;
+  --muted: rgba(241, 245, 249, 0.5);
+  --line: #e2e8f0;
+  --line-soft: rgba(226, 232, 240, 0.7);
+  --line-strong: #cbd5e1;
 
-  --ink: #0b1220;
-  --ink-2: #3c4658;
-  --ink-3: #6b7688;
+  --ink: #020817;
+  --ink-2: #475569;
+  --ink-3: #64748b;
 
-  --accent: #2b5cff;
-  --accent-ink: #ffffff;
-  --accent-wash: rgba(43, 92, 255, 0.08);
+  --accent: #2563eb;
+  --accent-ink: #f9fafb;
+  --accent-wash: rgba(37, 99, 235, 0.1);
+  --accent-line: rgba(37, 99, 235, 0.2);
+  /* Razorpay's own blue, used only where this page is being decorative. */
+  --razorpay-blue: #3395ff;
 
-  --good: #087f5b;
-  --good-wash: #e6f6f0;
-  --attention: #96690a;
-  --attention-wash: #fdf4e0;
-  --bad: #b42318;
-  --bad-wash: #fdeceb;
-  --neutral-wash: #eef0f4;
+  /* Status colours are picked for contrast on white, not for saturation:
+     they are read as words as often as they are seen as colour. */
+  --good: #15803d;
+  --good-wash: #f0fdf4;
+  --attention: #b45309;
+  --attention-wash: #fffbeb;
+  --bad: #dc2626;
+  --bad-wash: #fef2f2;
+  --neutral-wash: #f1f5f9;
 
-  --radius: 10px;
-  --radius-lg: 16px;
+  --radius-sm: 6px;
+  --radius: 8px;
+  --radius-lg: 12px;
+
   --mono: "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace;
-  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
-  --shadow: 0 1px 2px rgba(11, 18, 32, 0.05), 0 8px 24px -12px rgba(11, 18, 32, 0.18);
+  --sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+  --serif: Lora, Georgia, "Times New Roman", serif;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow: 0 4px 12px -2px rgba(2, 8, 23, 0.08), 0 2px 4px -2px rgba(2, 8, 23, 0.04);
+  --shadow-lg: 0 18px 40px -12px rgba(2, 8, 23, 0.18);
+
+  --gradient-subtle: linear-gradient(to bottom right, #f1f5f9, #fafafa);
+  --gradient-primary: linear-gradient(to bottom right, #2563eb, #3395ff); /* the second stop is the reference's primary-glow */
+
+  --ease: cubic-bezier(0.22, 0.8, 0.24, 1);
 }
 
 * { box-sizing: border-box; }
@@ -63,8 +87,9 @@ button, input { font-family: inherit; font-size: inherit; }
   justify-content: space-between;
   gap: 16px;
   flex-wrap: wrap;
-  padding: 14px 28px;
-  background: var(--surface);
+  padding: 16px 28px;
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: saturate(180%) blur(8px);
   border-bottom: 1px solid var(--line);
   position: sticky;
   top: 0;
@@ -116,48 +141,188 @@ button, input { font-family: inherit; font-size: inherit; }
 
 /* ---------------- Landing ---------------- */
 
-.hero { margin-bottom: 36px; }
-
-.hero-title {
-  font-size: 34px;
-  line-height: 1.15;
-  letter-spacing: -0.025em;
-  font-weight: 700;
-  margin: 0 0 14px;
+.hero {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background: var(--gradient-subtle);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-lg);
+  padding: clamp(40px, 6vw, 72px) clamp(24px, 4vw, 48px);
+  margin-bottom: 28px;
 }
 
-.hero-sub { margin: 0; color: var(--ink-2); max-width: 620px; }
+.hero-body { position: relative; z-index: 2; }
+
+/* The ruled grid. Two repeating gradients, faded out towards the edges so
+   it reads as texture rather than as a table. */
+.hero-grid {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background-image:
+    linear-gradient(to right, rgba(37, 99, 235, 0.16) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(37, 99, 235, 0.16) 1px, transparent 1px);
+  background-size: 32px 32px;
+  -webkit-mask-image: radial-gradient(135% 115% at 12% 0%, #000 0%, rgba(0, 0, 0, 0.35) 45%, transparent 82%);
+  mask-image: radial-gradient(135% 115% at 12% 0%, #000 0%, rgba(0, 0, 0, 0.35) 45%, transparent 82%);
+}
+
+/* A glow that sits wherever the pointer is. Idle until the pointer is
+   actually over the hero. */
+.hero-glow {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  opacity: 0;
+  transition: opacity 0.45s var(--ease);
+  background: radial-gradient(
+    280px circle at var(--mx, 50%) var(--my, 50%),
+    rgba(51, 149, 255, 0.22),
+    transparent 70%
+  );
+}
+
+.hero.is-lit .hero-glow { opacity: 1; }
+
+/* Razorpay's mark, drawing itself once on arrival then sitting still. */
+.hero-mark {
+  position: absolute;
+  z-index: 0;
+  right: clamp(-30px, -2vw, 0px);
+  bottom: -28px;
+  width: clamp(190px, 26vw, 300px);
+  height: auto;
+  opacity: 0.09;
+  color: var(--accent);
+}
+
+.hero-mark path {
+  stroke: currentColor;
+  stroke-dasharray: 260;
+  stroke-dashoffset: 260;
+  animation: markDraw 1.9s var(--ease) 0.25s forwards;
+}
+
+@keyframes markDraw { to { stroke-dashoffset: 0; } }
+
+.hero-title, .hero-sub { animation: riseIn 0.7s var(--ease) both; }
+.hero-sub { animation-delay: 0.1s; }
+
+/* The watchdog's landing state: whatever did not animate, show. */
+.landing.is-settled .hero-title,
+.landing.is-settled .hero-sub,
+.landing.is-settled .problem-card {
+  opacity: 1;
+  transform: none;
+  animation: none;
+}
+.landing.is-settled .problem-card {
+  transform: perspective(1000px) rotateX(var(--tilt-x, 0deg)) rotateY(var(--tilt-y, 0deg));
+}
+.landing.is-settled .hero-mark path { animation: none; stroke-dashoffset: 0; }
+
+@keyframes riseIn {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: none; }
+}
+
+.hero-title {
+  font-family: var(--serif);
+  font-size: clamp(38px, 5.4vw, 60px);
+  line-height: 1.08;
+  letter-spacing: -0.01em;
+  font-weight: 700;
+  margin: 0 0 18px;
+  max-width: 16ch;
+}
+
+/* The blue half of the headline. One phrase, so it reads as emphasis
+   rather than as decoration. */
+.hero-title em { font-style: normal; color: var(--accent); }
+
+.hero-sub { margin: 0; color: var(--ink-3); max-width: 60ch; font-size: 19px; line-height: 1.5; }
 
 .problem-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
 
+.problem-grid { perspective: 1000px; }
+
 .problem-card {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  padding: 22px 24px;
+  background: var(--muted);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  padding: 26px 26px 24px;
   text-decoration: none;
-  transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s;
+  box-shadow: var(--shadow-sm);
+  transform: perspective(1000px) rotateX(var(--tilt-x, 0deg)) rotateY(var(--tilt-y, 0deg));
+  transition: border-color 0.25s var(--ease), transform 0.35s var(--ease),
+    box-shadow 0.25s var(--ease), background 0.25s var(--ease);
+  animation: riseIn 0.6s var(--ease) var(--enter-delay, 0ms) both;
+}
+
+/* The sheen under the pointer. Sits behind the content, never over it. */
+.problem-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  opacity: 0;
+  transition: opacity 0.35s var(--ease);
+  background: radial-gradient(
+    260px circle at var(--mx, 50%) var(--my, 50%),
+    rgba(51, 149, 255, 0.16),
+    transparent 68%
+  );
 }
 
 .problem-card:hover {
-  border-color: var(--accent);
-  transform: translateY(-2px);
+  background: var(--surface);
+  border-color: var(--accent-line);
   box-shadow: var(--shadow);
 }
 
+.problem-card:hover::before { opacity: 1; }
+
 .problem-number {
-  font-family: var(--mono);
-  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  margin-bottom: 12px;
+  border-radius: var(--radius);
+  background: var(--accent-wash);
   color: var(--accent);
-  letter-spacing: 0.08em;
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 700;
+  transition: background 0.25s var(--ease), color 0.25s var(--ease),
+    transform 0.25s var(--ease), box-shadow 0.25s var(--ease);
 }
 
-.problem-question { font-size: 17px; line-height: 1.3; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
-.problem-summary { margin: 0; color: var(--ink-2); font-size: 13.5px; }
-.problem-go { margin-top: 6px; font-size: 13px; color: var(--accent); font-weight: 600; }
+.problem-card:hover .problem-number {
+  background: var(--accent);
+  color: var(--accent-ink);
+  transform: translateY(-2px) rotate(-4deg);
+  box-shadow: 0 8px 18px -6px rgba(37, 99, 235, 0.6);
+}
+
+.problem-question { font-family: var(--serif); font-size: 20px; line-height: 1.25; margin: 2px 0 0; font-weight: 700; }
+.problem-summary { margin: 0; color: var(--ink-3); font-size: 14px; line-height: 1.5; }
+.problem-go {
+  margin-top: 10px;
+  font-size: 14px;
+  color: var(--accent);
+  font-weight: 600;
+  transition: transform 0.25s var(--ease);
+}
+.problem-card:hover .problem-go { transform: translateX(4px); }
 
 /* ---------------- Problem view ---------------- */
 
@@ -166,24 +331,33 @@ button, input { font-family: inherit; font-size: inherit; }
 
 .problem-head { margin: 18px 0 32px; }
 .problem-number-lg { font-family: var(--mono); font-size: 12.5px; color: var(--accent); letter-spacing: 0.08em; }
-.problem-title { font-size: 28px; line-height: 1.2; letter-spacing: -0.02em; margin: 6px 0 12px; font-weight: 700; }
-.problem-detail { margin: 0; color: var(--ink-2); max-width: 680px; }
+.problem-title {
+  font-family: var(--serif);
+  font-size: clamp(30px, 3.6vw, 42px);
+  line-height: 1.12;
+  letter-spacing: -0.01em;
+  margin: 8px 0 14px;
+  font-weight: 700;
+  max-width: 20ch;
+}
+.problem-detail { margin: 0; color: var(--ink-3); max-width: 68ch; font-size: 16px; }
 
 /* ---------------- Steps ---------------- */
 
 .step {
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  padding: 24px 26px;
+  border-radius: var(--radius);
+  padding: 26px 28px;
   margin-bottom: 16px;
+  box-shadow: var(--shadow-sm);
 }
 
 .step-done { background: var(--surface-sunken); border-style: dashed; }
 
 .step-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; }
 .step-number { font-family: var(--mono); font-size: 12px; color: var(--ink-3); }
-.step-title { font-size: 18px; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+.step-title { font-family: var(--serif); font-size: 20px; margin: 0; font-weight: 700; }
 
 .lede { margin: 0 0 16px; color: var(--ink-2); max-width: 620px; }
 .done-line { margin: 0; color: var(--ink-3); font-size: 13.5px; font-family: var(--mono); }
@@ -194,38 +368,50 @@ button, input { font-family: inherit; font-size: inherit; }
 /* ---------------- Controls ---------------- */
 
 .btn {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   border: 1px solid transparent;
-  border-radius: var(--radius);
-  padding: 11px 20px;
-  font-weight: 600;
-  font-size: 14px;
+  border-radius: var(--radius-sm);
+  padding: 12px 26px;
+  font-weight: 500;
+  font-size: 15px;
   cursor: pointer;
   text-decoration: none;
   background: transparent;
+  transition: background 0.2s var(--ease), border-color 0.2s var(--ease),
+    color 0.2s var(--ease), box-shadow 0.2s var(--ease), transform 0.2s var(--ease);
 }
 
 .btn-primary { background: var(--accent); color: var(--accent-ink); }
-.btn-primary:hover:not(:disabled) { background: #2450e6; }
+.btn-primary:hover:not(:disabled) { background: #1d4fd8; box-shadow: var(--shadow); transform: translateY(-1px); }
 .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
 
-.btn-secondary { background: var(--surface); border-color: var(--line-strong); color: var(--ink); }
-.btn-secondary:hover { border-color: var(--accent); color: var(--accent); }
+/* Outlined in a tint of the same blue rather than in grey: it is the
+   second choice, not a disabled one. */
+.btn-secondary { background: var(--surface); border-color: var(--accent-line); color: var(--ink); }
+.btn-secondary:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-wash); }
 
-.btn-small { padding: 7px 14px; font-size: 13px; }
+.btn-small { padding: 8px 16px; font-size: 13.5px; }
 
 .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 18px; }
 
 .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; max-width: 340px; }
 .field-label { font-size: 12.5px; color: var(--ink-2); font-weight: 550; }
 .field-input {
-  padding: 10px 12px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius);
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
   background: var(--surface);
   color: var(--ink);
+  transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease);
 }
-.field-input:focus { outline: none; border-color: var(--accent); }
+.field-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-wash);
+}
 
 .status-line { margin: 12px 0 0; color: var(--ink-2); font-size: 13.5px; min-height: 20px; }
 .status-line:not(:empty)::before { content: "● "; color: var(--accent); }
@@ -243,14 +429,22 @@ button, input { font-family: inherit; font-size: inherit; }
   flex-direction: column;
   gap: 6px;
   text-align: left;
-  background: var(--surface);
-  border: 1px solid var(--line-strong);
+  background: var(--muted);
+  border: 1px solid var(--line-soft);
   border-radius: var(--radius);
-  padding: 18px;
+  padding: 20px;
   cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.2s var(--ease), background 0.2s var(--ease),
+    transform 0.2s var(--ease), box-shadow 0.2s var(--ease);
 }
 
-.choice:hover { border-color: var(--accent); background: var(--accent-wash); }
+.choice:hover {
+  border-color: var(--accent-line);
+  background: var(--surface);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow);
+}
 .choice-amount { font-size: 22px; font-weight: 700; font-family: var(--mono); letter-spacing: -0.02em; }
 .choice-caption { font-size: 13px; color: var(--ink-2); }
 .choice-expectation { font-size: 12.5px; color: var(--ink-3); }
@@ -427,24 +621,43 @@ button, input { font-family: inherit; font-size: inherit; }
 
 /* ---------------- Other problems ---------------- */
 
-.problem-footer { margin-top: 40px; border-top: 1px solid var(--line); padding-top: 24px; }
-.other-title { font-size: 15px; margin: 0 0 14px; font-weight: 650; }
-.other-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.problem-footer {
+  margin-top: 56px;
+  background: var(--gradient-primary);
+  border-radius: var(--radius-lg);
+  padding: 36px clamp(22px, 3.5vw, 40px) 34px;
+  box-shadow: var(--shadow-lg);
+}
 
+.other-title {
+  font-family: var(--serif);
+  font-size: 24px;
+  margin: 0 0 18px;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.other-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+
+/* Cards on the blue panel: white plate, blue text -- the inverse of the
+   cards above, so the end of the page reads as a different place. */
 .other-card {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 16px;
-  border: 1px solid var(--line);
+  gap: 8px;
+  padding: 18px;
+  border: 1px solid transparent;
   border-radius: var(--radius);
-  background: var(--surface);
+  background: rgba(255, 255, 255, 0.12);
   text-decoration: none;
+  transition: background 0.25s var(--ease), transform 0.25s var(--ease);
 }
 
-.other-card:hover { border-color: var(--accent); }
-.other-number { font-family: var(--mono); font-size: 11px; color: var(--accent); }
-.other-question { font-size: 13px; color: var(--ink); line-height: 1.35; }
+.other-card:hover { background: #ffffff; transform: translateY(-3px); }
+.other-number { font-family: var(--mono); font-size: 11.5px; color: rgba(255, 255, 255, 0.75); font-weight: 700; }
+.other-question { font-size: 14px; color: #ffffff; line-height: 1.4; font-weight: 500; }
+.other-card:hover .other-number { color: var(--accent); }
+.other-card:hover .other-question { color: var(--ink); }
 
 /* ---------------- Responsive ---------------- */
 
@@ -619,7 +832,7 @@ button, input { font-family: inherit; font-size: inherit; }
 /* ---------------- Action area: one obvious next step ---------------- */
 
 .action-area { margin-bottom: 26px; }
-.action-title { font-size: 20px; letter-spacing: -0.015em; margin: 0 0 8px; font-weight: 680; }
+.action-title { font-family: var(--serif); font-size: 26px; line-height: 1.2; margin: 0 0 10px; font-weight: 700; }
 .action-lede { margin: 0 0 16px; color: var(--ink-2); max-width: 620px; }
 .action-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 .action-done { margin: 0; font-size: 13px; color: var(--ink-3); }
@@ -664,7 +877,7 @@ button, input { font-family: inherit; font-size: inherit; }
 }
 
 .outcome-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--ink-3); font-weight: 700; }
-.outcome-title { font-size: 22px; margin: 6px 0 0; letter-spacing: -0.02em; font-weight: 700; }
+.outcome-title { font-family: var(--serif); font-size: 26px; margin: 6px 0 0; font-weight: 700; }
 .outcome-amount { font-family: var(--mono); font-size: 15px; margin-top: 8px; font-weight: 600; }
 .outcome-detail { margin: 8px 0 0; color: var(--ink-2); max-width: 620px; }
 

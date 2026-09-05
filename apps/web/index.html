@@ -7,12 +7,18 @@
   <title>Payment Decision System — Razorpay Test Mode</title>
   <meta name="description" content="Four real payment problems you can run yourself against Razorpay Test Mode: an authorized payment needing a decision, gateway trouble detection, isolated versus widespread failures, and customer payment history as context." />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%230b1220'/%3E%3Cpath d='M26 68 L26 32 L52 32 Q66 32 66 46 Q66 58 52 58 L38 58 L74 68' stroke='%234f7cff' stroke-width='9' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+  <!-- Lora, for the few headings that carry a page. Everything still
+       reads correctly in Georgia if this never arrives. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lora:wght@600;700&display=swap" />
   <link rel="stylesheet" href="/style.css" />
   <!--
     Razorpay Checkout. This is Razorpay's own script, loaded from Razorpay's
-    own domain, and it is the only external resource this page loads. It is
-    what makes the payment step real: the evaluator enters Test Mode payment
-    details in Razorpay's dialog, not in anything this project wrote.
+    own domain, and it is the only external code this page runs -- the only
+    other external request is the webfont above. It is what makes the payment
+    step real: the evaluator enters Test Mode payment details in Razorpay's
+    dialog, not in anything this project wrote.
 
     It receives the publishable key id, fetched at runtime from
     /checkout-config. The secret never reaches the browser -- there is no

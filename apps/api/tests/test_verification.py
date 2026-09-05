@@ -21,6 +21,7 @@ import pytest
 from action.orchestrator import propose_action
 from razorpay_client.errors import RazorpayAPIError
 from reconciliation.service import reconcile_order
+from repository.payment_attempts import get_payment_attempt
 from repository.actions import get_action, get_action_for_update
 from repository.audit import list_audit_trail_for_decision
 from support import insert_capture_decision as _insert_capture_decision
@@ -149,6 +150,49 @@ def test_success_response_confirmed_by_live_fetch_is_verified_success(db_conn, d
     assert result["outcome"]["recovered_amount"] == 10000
     assert "verified_at" in result["outcome"]
     assert "time_to_resolution_seconds" in result["outcome"]
+
+
+def test_verified_capture_leaves_the_payment_attempt_row_saying_captured(db_conn, demo_merchant_id):
+    """Regression: the attempt row must not stay stale after a capture.
+
+    It used to. Verification read Razorpay, saw "captured", recorded
+    VERIFIED_SUCCESS against the action -- and left payment_attempts
+    saying "authorized, captured=false". Every later reader of that table
+    then reported a captured payment as still awaiting capture, which is
+    exactly how it was noticed: the failure-pattern analysis counted
+    captured payments as "authorized but not captured".
+    """
+    action = _make_verifying_action(db_conn, demo_merchant_id, "order_ver_writeback", amount=10000)
+    payment_id = "pay_order_ver_writeback"
+
+    before = get_payment_attempt(db_conn, payment_id)
+    assert before["status"] == "authorized" and before["captured"] is False
+
+    read_client = SpyReadClient(
+        lambda pid: {"id": pid, "status": "captured", "amount": 10000, "captured": True}
+    )
+    result = verify_action(db_conn, action["id"], read_client=read_client)
+    assert result["status"] == "VERIFIED_SUCCESS"
+
+    after = get_payment_attempt(db_conn, payment_id)
+    assert after["status"] == "captured"
+    assert after["captured"] is True
+
+
+def test_a_verified_failure_leaves_the_attempt_row_alone(db_conn, demo_merchant_id):
+    """The write-back records what was read, so a payment Razorpay still
+    reports as authorized must stay authorized. The row follows Razorpay,
+    never the verdict."""
+    action = _make_verifying_action(db_conn, demo_merchant_id, "order_ver_no_writeback", amount=10000)
+    payment_id = "pay_order_ver_no_writeback"
+
+    read_client = SpyReadClient(lambda pid: {"id": pid, "status": "authorized", "amount": 10000})
+    result = verify_action(db_conn, action["id"], read_client=read_client)
+    assert result["status"] == "VERIFIED_FAILED"
+
+    after = get_payment_attempt(db_conn, payment_id)
+    assert after["status"] == "authorized"
+    assert after["captured"] is False
 
 
 def test_error_response_but_live_fetch_shows_captured_is_still_verified_success(db_conn, demo_merchant_id):

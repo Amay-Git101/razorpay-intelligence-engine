@@ -40,7 +40,11 @@ from razorpay_client.errors import RazorpayAPIError
 from repository.actions import get_action, get_action_for_update, update_action_status
 from repository.audit import insert_audit_entry
 from repository.decisions import get_decision
-from repository.payment_attempts import get_payment_attempt
+from repository.payment_attempts import (
+    InvalidPaymentAttemptTransition,
+    get_payment_attempt,
+    update_payment_attempt_status,
+)
 
 MAX_READ_ATTEMPTS = 3
 
@@ -108,6 +112,10 @@ def verify_action(
             update_action_status(conn, action["id"], "VERIFICATION_UNCERTAIN", verification_result=verification_result)
             return get_action(conn, action["id"])
 
+        # Whatever the verdict below, this read is the freshest thing anyone
+        # has about this payment. Record it against the attempt row.
+        _record_observed_status(conn, payment_row, fetched)
+
         if fetched.get("status") == "captured" and fetched.get("amount") == expected_amount:
             return _finalize(conn, action, "VERIFIED_SUCCESS", verification_result, "CAPTURED_CONFIRMED")
         if fetched.get("status") == "authorized":
@@ -120,6 +128,50 @@ def verify_action(
         return _finalize(
             conn, action, "ESCALATED", verification_result, f"UNEXPECTED_PAYMENT_STATUS:{fetched.get('status')}"
         )
+
+
+
+def _record_observed_status(
+    conn: psycopg.Connection,
+    payment_row: dict[str, Any] | None,
+    fetched: dict[str, Any],
+) -> None:
+    """Write Razorpay's just-read status back onto the payment attempt.
+
+    This is an OBSERVATION, not a declaration. Verification remains the
+    sole authority on whether an action succeeded -- that verdict is
+    recorded by _finalize() against the action, and nothing here touches
+    it. What this does is stop payment_attempts from going stale after a
+    capture: without it the row keeps saying "authorized, not captured"
+    for a payment Razorpay has confirmed as captured, and every later
+    reader of that table -- the failure-pattern analysis above all --
+    quietly reports the wrong thing.
+
+    No Razorpay write is involved. This is the same write reconciliation
+    performs from the same kind of payload.
+    """
+    if payment_row is None:
+        return
+
+    fetched_status = fetched.get("status")
+    if not fetched_status or fetched_status == payment_row["status"]:
+        return  # unchanged: strict no-op, exactly as reconciliation treats it
+
+    try:
+        update_payment_attempt_status(
+            conn,
+            payment_row["id"],
+            fetched_status,
+            bool(fetched.get("captured", False)),
+            fetched,
+        )
+    except InvalidPaymentAttemptTransition:
+        # The database's transition guard rejected this pair. That is a
+        # real anomaly, but it is not this function's to resolve, and it
+        # must not stop the action from being verified: reconciliation
+        # records anomalies, and the verification verdict below is based
+        # on the fetched payload either way.
+        pass
 
 
 def _finalize(
