@@ -105,7 +105,7 @@ Razorpay. `STOPPED` is money no longer being pursued, never money saved.
 ## Limitations
 
 Kept current rather than allowed to drift upward. Full list in
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §9.
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 - The classifier is **unvalidated on real traffic** — the corpus is small and
   single-author, so its accuracy is self-consistent by construction and is *not*
