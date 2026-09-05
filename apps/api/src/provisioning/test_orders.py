@@ -33,7 +33,12 @@ import psycopg
 from pydantic import BaseModel
 
 from repository.orders import upsert_order
-from repository.payment_experiments import insert_experiment, insert_experiment_order
+from repository.payment_experiments import (
+    get_experiment,
+    insert_experiment,
+    insert_experiment_order,
+    list_experiment_orders_with_state,
+)
 
 # A guided experiment is a demonstration, not a load test. Six is the
 # largest cohort any journey asks for, and every order in it has to be paid
@@ -59,6 +64,34 @@ class ExperimentCreationResult(BaseModel):
     orders: list[CreatedOrder]
 
 
+class CohortAlreadyInUse(Exception):
+    """Raised when orders are added to a cohort that already has an observed
+    payment. See _next_position for why that is refused."""
+
+
+def _next_position(conn: psycopg.Connection, experiment_id: UUID | str) -> int:
+    """Where the next order goes, and the guard that keeps a cohort's
+    denominator honest.
+
+    Adding orders to a cohort is allowed only while NONE of its orders has
+    been paid. Once an outcome exists, the group being judged is fixed:
+    appending to it afterwards would let someone who disliked "4 of 6" turn
+    it into "4 of 9" by adding three fresh orders, which is the denominator
+    manipulation the whole cohort table exists to prevent.
+
+    Creation-time appending is what makes honest progressive creation
+    possible -- six separate calls, six real orders, each card appearing
+    when its own order actually exists -- without a fake progress bar over
+    a single request.
+    """
+    rows = list_experiment_orders_with_state(conn, experiment_id)
+    if any(row["payment_status"] is not None for row in rows):
+        raise CohortAlreadyInUse(
+            "this group already has a payment result -- orders cannot be added to it now"
+        )
+    return len(rows) + 1
+
+
 def create_test_orders(
     conn: psycopg.Connection,
     order_client: Any,
@@ -68,12 +101,17 @@ def create_test_orders(
     amount: int,
     currency: str = "INR",
     label: str | None = None,
+    experiment_id: UUID | str | None = None,
 ) -> ExperimentCreationResult:
     """Creates `count` real Test Mode orders and freezes them into a cohort.
 
     `order_client` is injected rather than constructed here so tests can
     supply a double, and so the only place that can build a real
     credentialed client stays the API layer that owns the request.
+
+    Passing `experiment_id` appends to an existing cohort instead of
+    starting one, which is how the six-payment experiment creates its
+    orders one real call at a time.
     """
     if kind not in EXPERIMENT_KINDS:
         raise ValueError(f"kind must be one of {EXPERIMENT_KINDS}, got {kind!r}")
@@ -84,11 +122,24 @@ def create_test_orders(
     if amount <= 0:
         raise ValueError(f"amount must be positive, got {amount}")
 
-    experiment_id: UUID = insert_experiment(conn, merchant_id, kind, label)
-    conn.commit()
+    if experiment_id is None:
+        experiment_id = insert_experiment(conn, merchant_id, kind, label)
+        conn.commit()
+        start_position = 1
+    else:
+        existing = get_experiment(conn, experiment_id)
+        if existing is None:
+            raise ValueError(f"no experiment with id {experiment_id}")
+        if str(existing["merchant_id"]) != str(merchant_id):
+            raise ValueError("that experiment belongs to a different merchant")
+        start_position = _next_position(conn, experiment_id)
+        if start_position + count - 1 > MAX_ORDERS_PER_EXPERIMENT:
+            raise ValueError(
+                f"a group may hold at most {MAX_ORDERS_PER_EXPERIMENT} orders"
+            )
 
     created: list[CreatedOrder] = []
-    for position in range(1, count + 1):
+    for position in range(start_position, start_position + count):
         order = order_client.create_order(
             amount=amount,
             currency=currency,

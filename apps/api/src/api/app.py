@@ -69,7 +69,7 @@ from context.customer_history import summarize_customer_history
 from pipeline.orchestration import UnresolvedEventError, run_reconciliation_pipeline
 from pipeline.simulation import simulate_decision
 from provisioning.razorpay_order_client import RazorpayOrderClient
-from provisioning.test_orders import create_test_orders
+from provisioning.test_orders import CohortAlreadyInUse, create_test_orders
 from risk.failure_patterns import FailurePatternReport, analyze_experiment, analyze_recent_payments
 from razorpay_client.client import RazorpayReadClient
 from razorpay_client.errors import RazorpayAPIError
@@ -559,7 +559,8 @@ def checkout_config() -> CheckoutConfigResponse:
     "/merchants/{merchant_id}/test-orders",
     response_model=CreateTestOrdersResponse,
     responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse},
-               502: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+               409: {"model": ErrorResponse}, 502: {"model": ErrorResponse},
+               500: {"model": ErrorResponse}},
 )
 def create_experiment_orders(
     merchant_id: str,
@@ -593,7 +594,10 @@ def create_experiment_orders(
             amount=request.amount,
             currency=request.currency,
             label=request.label,
+            experiment_id=request.experiment_id,
         )
+    except CohortAlreadyInUse as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except RazorpayAPIError:

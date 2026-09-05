@@ -304,6 +304,10 @@ class CreateTestOrdersRequest(BaseModel):
     amount: int = Field(gt=0)
     currency: str = "INR"
     label: str | None = None
+    # Appends to an existing group instead of starting one. Refused once
+    # any order in that group has a payment result -- see
+    # provisioning/test_orders.py.
+    experiment_id: str | None = None
 
 
 class CreatedOrderSummary(BaseModel):

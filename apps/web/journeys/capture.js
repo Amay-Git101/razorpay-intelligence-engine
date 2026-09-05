@@ -2,53 +2,42 @@
 
 import { Api } from "../lib/api.js";
 import { openCheckout } from "../lib/checkout.js";
+import { actionButton, createEventStream, createStageTrack, focusOn, pollWhile } from "../lib/live.js";
 import { renderPipelineResult } from "../lib/pipeline.js";
-import {
-  clear,
-  el,
-  notice,
-  primaryButton,
-  rupees,
-  secondaryButton,
-  statusLine,
-  step,
-} from "../lib/ui.js";
+import { PIPELINE_STAGES, applyTimeline, latestAttempt, outcomeHeadline } from "../lib/progress.js";
+import { testDetailsLink } from "../lib/testcards.js";
+import { clear, el, notice, rupees, secondaryButton } from "../lib/ui.js";
 
 /**
  * Problem 01 -- an authorized payment needs a decision.
  *
- * The evaluator picks an amount, pays a real Razorpay Test Mode order, and
- * the real pipeline decides what happens to it. The amount is the whole
- * experiment: this merchant's policy allows automatic capture up to a
- * limit, so a small payment and a large one take genuinely different paths
- * through the same code.
+ * The page is one continuous experiment rather than four boxes: a stage
+ * track and an activity log stay on screen throughout, and the action area
+ * beneath them changes to whatever the single next step is.
  *
- * Nothing here decides anything. Every state rendered comes from the
- * backend after it read Razorpay.
+ * Every stage lights up from a real snapshot. While the pipeline runs, the
+ * timeline is polled -- reconciliation commits the observed payment before
+ * any decision is made, so "payment observed" genuinely lands before
+ * "recommendation", and the page shows that order because it happened, not
+ * because it was scripted.
  */
 
 const STORAGE_KEY = "journey.capture";
 
-// Two amounts chosen to sit on either side of this merchant's configured
-// automatic-capture limit. The captions describe what is expected; the
-// backend's policy engine is what actually decides, and the outcome shown
-// is read from its decision. If the merchant's configuration changed, the
-// result displayed would change with it -- nothing here is asserting the
-// answer in advance.
 const AMOUNT_CHOICES = [
   {
     id: "within",
     amount: 50000,
     title: "₹500",
-    caption: "Within this merchant's automatic capture limit.",
-    expectation: "Expected: the system recommends capture and policy allows it.",
+    caption: "Inside this merchant's automatic capture limit.",
+    expectation: "Policy should allow the system to capture this on its own.",
   },
   {
     id: "above",
     amount: 800000,
     title: "₹8,000",
-    caption: "Above the automatic limit, inside the approval band.",
-    expectation: "Expected: the system still recommends capture, but policy withholds automatic authority.",
+    caption: "Above that limit, inside the approval band.",
+    expectation: "The system should still recommend capture — and policy should withhold it.",
   },
 ];
 
@@ -64,38 +53,56 @@ function save(state) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   } catch (_) {
-    // A browser refusing storage only costs resume-after-refresh.
-  }
-}
-
-function reset() {
-  try {
-    localStorage.removeItem(STORAGE_KEY);
-  } catch (_) {
-    /* ignore */
+    /* resume-after-refresh is a convenience, not a requirement */
   }
 }
 
 export function renderCaptureJourney(container, ctx) {
   let state = load() || { stage: "choose" };
+  const seenEvents = new Set();
 
-  function rerender() {
-    save(state);
-    clear(container);
-    draw();
+  const track = createStageTrack(PIPELINE_STAGES);
+  const stream = createEventStream();
+
+  const stageArea = el("section", "experiment");
+  const trackWrap = el("div", "experiment-track");
+  trackWrap.appendChild(track.node);
+  stageArea.appendChild(trackWrap);
+  stageArea.appendChild(stream.node);
+
+  const actionArea = el("section", "action-area");
+  const resultArea = el("section", "result-area");
+
+  // The next action leads. The stage track and activity log sit beneath
+  // it as context: an evaluator arriving cold should see what to do first,
+  // not six rows of "waiting".
+  container.appendChild(actionArea);
+  container.appendChild(stageArea);
+  container.appendChild(resultArea);
+
+  // ---- Restore whatever is already true, without re-announcing it ----
+  if (state.orderId) {
+    track.set("order", "done", `${state.orderId} · ${rupees(state.amount)}`);
+  }
+  if (state.timeline) {
+    applyTimeline(track, null, state.timeline, seenEvents);
   }
 
-  function draw() {
-    // ---- Step 1: create a real order ----
-    const chooseStep = step({
-      number: 1,
-      title: "Create a test order",
-      state: state.stage === "choose" ? "active" : "done",
-    });
+  function persist() {
+    save(state);
+  }
+
+  // ---------------------------------------------------------------------
+  // Action area -- exactly one obvious next step at a time
+  // ---------------------------------------------------------------------
+
+  function renderAction() {
+    clear(actionArea);
 
     if (state.stage === "choose") {
-      chooseStep.content.appendChild(
-        el("p", "lede", "Pick an amount. The merchant's policy allows automatic capture up to a limit, so this choice changes what the system is allowed to do later."),
+      actionArea.appendChild(el("h2", "action-title", "Create a real test order"));
+      actionArea.appendChild(
+        el("p", "action-lede", "Pick an amount. This merchant allows automatic capture up to a limit, so the amount decides what the system will be permitted to do."),
       );
       const choices = el("div", "choices");
       AMOUNT_CHOICES.forEach((choice) => {
@@ -104,83 +111,71 @@ export function renderCaptureJourney(container, ctx) {
         card.appendChild(el("span", "choice-amount", choice.title));
         card.appendChild(el("span", "choice-caption", choice.caption));
         card.appendChild(el("span", "choice-expectation", choice.expectation));
-        card.addEventListener("click", () => createOrder(choice));
+        card.addEventListener("click", () => createOrder(choice, card));
         choices.appendChild(card);
       });
-      chooseStep.content.appendChild(choices);
-      chooseStep.content.appendChild(status.node);
-    } else {
-      chooseStep.content.appendChild(
-        el("p", "done-line", `Order ${state.orderId} created for ${rupees(state.amount)} in Razorpay Test Mode.`),
-      );
+      actionArea.appendChild(choices);
+      return;
     }
-    container.appendChild(chooseStep.node);
-
-    if (state.stage === "choose") return;
-
-    // ---- Step 2: pay it, for real ----
-    const payStep = step({
-      number: 2,
-      title: "Complete the payment",
-      state: state.stage === "created" ? "active" : "done",
-    });
 
     if (state.stage === "created") {
-      payStep.content.appendChild(
-        el("p", "lede", "This opens Razorpay's own Checkout. Use any Razorpay Test Mode payment method — the details go to Razorpay, not to this site."),
+      actionArea.appendChild(el("h2", "action-title", "Your order is ready. Now pay it."));
+      actionArea.appendChild(
+        el("p", "action-lede", "This opens Razorpay's own Checkout. The payment details go to Razorpay, never to this site."),
       );
-      payStep.content.appendChild(primaryButton("Pay with Razorpay", pay));
-      payStep.content.appendChild(payStatus.node);
-    } else {
-      payStep.content.appendChild(el("p", "done-line", "Checkout closed. The result below came from asking Razorpay, not from Checkout."));
+      const row = el("div", "action-row");
+      row.appendChild(
+        actionButton({
+          label: "Pay with Razorpay",
+          workingLabel: "Opening Razorpay…",
+          onClick: pay,
+        }),
+      );
+      row.appendChild(testDetailsLink());
+      actionArea.appendChild(row);
+      return;
     }
-    container.appendChild(payStep.node);
-
-    if (state.stage === "created") return;
-
-    // ---- Step 3: run the real pipeline ----
-    const checkStep = step({
-      number: 3,
-      title: "Let the system decide",
-      state: state.stage === "paid" ? "active" : "done",
-    });
 
     if (state.stage === "paid") {
-      checkStep.content.appendChild(
-        el("p", "lede", "The system will read this payment from Razorpay, work out what it is, decide what it recommends, check merchant policy, act only if allowed, and then independently verify what happened."),
+      actionArea.appendChild(el("h2", "action-title", "Checkout closed. Now find out what actually happened."));
+      actionArea.appendChild(
+        el("p", "action-lede", "The system will read this payment from Razorpay, decide what it recommends, check merchant policy, act only if allowed, and then verify the result independently."),
       );
-      checkStep.content.appendChild(primaryButton("Run the system", runPipeline));
-      checkStep.content.appendChild(runStatus.node);
-    } else {
-      checkStep.content.appendChild(el("p", "done-line", "The pipeline ran against the live payment."));
+      actionArea.appendChild(
+        actionButton({
+          label: "Let the system decide",
+          workingLabel: "Working…",
+          onClick: runPipeline,
+        }),
+      );
+      return;
     }
-    container.appendChild(checkStep.node);
 
-    if (state.stage !== "done") return;
-
-    // ---- Step 4: what actually happened ----
-    const resultStep = step({ number: 4, title: "What actually happened", state: "active" });
-    if (state.timeline) {
-      resultStep.content.appendChild(renderPipelineResult(state.timeline));
-    }
-    const again = el("div", "actions");
-    again.appendChild(
+    // done
+    actionArea.appendChild(
       secondaryButton("Run it again with a different amount", () => {
-        reset();
         state = { stage: "choose" };
-        rerender();
+        seenEvents.clear();
+        stream.clear();
+        track.reset();
+        track.set("order", "waiting", "");
+        persist();
+        clear(resultArea);
+        renderAction();
+        focusOn(actionArea);
       }),
     );
-    resultStep.content.appendChild(again);
-    container.appendChild(resultStep.node);
   }
 
-  const status = statusLine();
-  const payStatus = statusLine();
-  const runStatus = statusLine();
+  // ---------------------------------------------------------------------
+  // Steps
+  // ---------------------------------------------------------------------
 
-  async function createOrder(choice) {
-    status.set("Creating a real order in Razorpay Test Mode…");
+  async function createOrder(choice, cardNode) {
+    cardNode.classList.add("is-working");
+    track.set("order", "working", "Asking Razorpay to create an order");
+    stream.push(`Creating a ${choice.title} test order in Razorpay Test Mode…`);
+
     try {
       const result = await Api.createTestOrders(ctx.merchant.id, {
         kind: "capture_decision",
@@ -196,53 +191,128 @@ export function renderCaptureJourney(container, ctx) {
         amount: order.amount,
         currency: order.currency,
       };
-      rerender();
+      persist();
+
+      track.set("order", "done", `${order.order_id} · ${rupees(order.amount)}`);
+      stream.push(`Order ${order.order_id} created for ${rupees(order.amount)}.`, "good");
+      renderAction();
+      focusOn(actionArea);
     } catch (error) {
-      status.clear();
-      container.appendChild(notice(`The order could not be created: ${error.message}`, "bad"));
+      cardNode.classList.remove("is-working");
+      track.set("order", "blocked", "Could not be created");
+      stream.push(`Order creation failed: ${error.message}`, "bad");
+      showError("The test order could not be created.", error, () => renderAction());
     }
   }
 
   async function pay() {
-    payStatus.set("Opening Razorpay Checkout…");
+    stream.push("Opening Razorpay Checkout…");
     try {
       await openCheckout({
         order: { order_id: state.orderId, amount: state.amount, currency: state.currency },
-        onClosed: () => {
-          // However Checkout ended, the next step is the same: ask the
-          // server. Checkout's own callbacks are not treated as truth.
-          payStatus.clear();
+        onClosed: (outcome) => {
+          // Checkout's own result is only a signal to go and ask the
+          // server. It is deliberately not shown as a payment state.
+          stream.push(
+            outcome.kind === "dismissed"
+              ? "Checkout was closed without completing a payment."
+              : "Checkout closed. Razorpay has not been asked yet.",
+          );
           state.stage = "paid";
-          rerender();
+          persist();
+          renderAction();
+          focusOn(actionArea);
         },
       });
     } catch (error) {
-      payStatus.clear();
-      container.appendChild(notice(error.message, "bad"));
+      stream.push(error.message, "bad");
+      showError("Razorpay Checkout could not be opened.", error, () => renderAction());
     }
   }
 
   async function runPipeline() {
+    track.set("payment", "working", "Reading this payment from Razorpay");
+    stream.push("Reading the payment from Razorpay…");
+
     try {
-      runStatus.set("Reading the payment from Razorpay and running the pipeline…");
-      await Api.reconcile(ctx.merchant.id, state.orderId);
+      // Poll the real timeline while the pipeline runs. Reconciliation
+      // commits the observed payment before any decision exists, so these
+      // stages arrive in the order they actually happen.
+      const reconcile = Api.reconcile(ctx.merchant.id, state.orderId);
+      await pollWhile(reconcile, {
+        poll: () => Api.orderTimeline(state.orderId),
+        onUpdate: (snapshot) => applyTimeline(track, stream, snapshot, seenEvents),
+      });
 
-      runStatus.set("Reading back what was recorded…");
       const timeline = await Api.orderTimeline(state.orderId);
+      applyTimeline(track, stream, timeline, seenEvents);
 
-      runStatus.clear();
       state.stage = "done";
       state.timeline = timeline;
-      rerender();
+      persist();
+
+      renderResult(timeline);
+      renderAction();
+      focusOn(resultArea);
     } catch (error) {
-      runStatus.clear();
-      const message =
+      track.set("payment", "blocked", "Could not be read");
+      stream.push(`The system could not complete: ${error.message}`, "bad");
+      showError(
         error.status === 502
-          ? "Razorpay could not be read for this order. Nothing was decided and nothing was captured."
-          : `The pipeline could not complete: ${error.message}`;
-      container.appendChild(notice(message, "bad"));
+          ? "Razorpay could not be read for this order. Nothing was decided and no money moved."
+          : "The system could not finish looking at this payment.",
+        error,
+        () => renderAction(),
+      );
     }
   }
 
-  rerender();
+  // ---------------------------------------------------------------------
+  // Result
+  // ---------------------------------------------------------------------
+
+  function renderResult(timeline) {
+    clear(resultArea);
+
+    const headline = outcomeHeadline(timeline);
+    const banner = el("div", `outcome outcome-${headline.tone}`);
+    banner.appendChild(el("span", "outcome-label", "Result"));
+    banner.appendChild(el("h2", "outcome-title", headline.title));
+    if (headline.amount !== undefined && headline.amount !== null) {
+      banner.appendChild(el("div", "outcome-amount", `${rupees(headline.amount)} confirmed captured`));
+    }
+    if (headline.detail) banner.appendChild(el("p", "outcome-detail", headline.detail));
+    resultArea.appendChild(banner);
+
+    const attempt = latestAttempt(timeline);
+    if (attempt && attempt.status === "captured" && timeline.decision && timeline.decision.decision_type === "NO_ACTION") {
+      resultArea.appendChild(
+        notice(
+          "Razorpay had already captured this payment before the system looked at it, so there was no decision left to make. Create a new order to see the capture path.",
+          "neutral",
+        ),
+      );
+    }
+
+    resultArea.appendChild(renderPipelineResult(timeline));
+  }
+
+  function showError(message, error, retry) {
+    clear(resultArea);
+    const box = el("div", "outcome outcome-blocked");
+    box.appendChild(el("span", "outcome-label", "Problem"));
+    box.appendChild(el("h2", "outcome-title", message));
+    const details = el("details", "tech");
+    details.appendChild(el("summary", null, "Technical detail"));
+    details.appendChild(el("p", "tech-value", error && error.message ? error.message : String(error)));
+    box.appendChild(details);
+    resultArea.appendChild(box);
+    if (retry) retry();
+    focusOn(resultArea);
+  }
+
+  // ---------------------------------------------------------------------
+
+  renderAction();
+  if (state.stage === "done" && state.timeline) renderResult(state.timeline);
 }

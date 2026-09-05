@@ -18,7 +18,11 @@ import uuid
 import pytest
 
 from provisioning.razorpay_order_client import MANUAL_CAPTURE, RazorpayOrderClient
-from provisioning.test_orders import MAX_ORDERS_PER_EXPERIMENT, create_test_orders
+from provisioning.test_orders import (
+    MAX_ORDERS_PER_EXPERIMENT,
+    CohortAlreadyInUse,
+    create_test_orders,
+)
 from repository.payment_experiments import (
     get_experiment,
     list_experiment_orders_with_state,
@@ -125,6 +129,98 @@ def test_a_razorpay_failure_is_not_swallowed(committed_merchant):
 
     with pytest.raises(RuntimeError, match="Razorpay unreachable"):
         create_test_orders(db_conn, ExplodingOrderClient(), merchant_id, kind="capture_decision", count=1, amount=50000)
+
+
+# ---------------------------------------------------------------------------
+# Appending to a group, one real order at a time
+# ---------------------------------------------------------------------------
+
+
+def test_orders_can_be_appended_to_a_group_before_anything_is_paid(committed_merchant):
+    """This is what lets the six-payment experiment create its orders one
+    real call at a time, so a card appears only once its own order exists."""
+    db_conn, merchant_id = committed_merchant
+    client = FakeOrderClient()
+
+    first = create_test_orders(
+        db_conn, client, merchant_id, kind="failure_pattern", count=1, amount=50000
+    )
+    for _ in range(5):
+        create_test_orders(
+            db_conn, client, merchant_id, kind="failure_pattern", count=1, amount=50000,
+            experiment_id=first.experiment_id,
+        )
+
+    cohort = list_experiment_orders_with_state(db_conn, first.experiment_id)
+    assert [row["position"] for row in cohort] == [1, 2, 3, 4, 5, 6]
+    assert len({row["order_id"] for row in cohort}) == 6, "six distinct real orders"
+
+
+def test_appending_stops_at_the_ceiling(committed_merchant):
+    db_conn, merchant_id = committed_merchant
+    client = FakeOrderClient()
+    first = create_test_orders(
+        db_conn, client, merchant_id, kind="failure_pattern", count=6, amount=50000
+    )
+
+    with pytest.raises(ValueError, match="at most"):
+        create_test_orders(
+            db_conn, client, merchant_id, kind="failure_pattern", count=1, amount=50000,
+            experiment_id=first.experiment_id,
+        )
+
+
+def test_orders_cannot_be_added_once_the_group_has_a_result(committed_merchant):
+    """The denominator guard. Someone who disliked '4 of 6' must not be able
+    to make it '4 of 9' by adding three fresh orders afterwards."""
+    from repository.payment_attempts import insert_payment_attempt
+
+    db_conn, merchant_id = committed_merchant
+    client = FakeOrderClient()
+    first = create_test_orders(
+        db_conn, client, merchant_id, kind="failure_pattern", count=2, amount=50000
+    )
+
+    insert_payment_attempt(
+        db_conn, payment_attempt_id=f"pay_APP_{uuid.uuid4().hex[:10]}",
+        order_id=first.orders[0].order_id, status="failed", method="card", captured=False,
+        error_source="bank", error_step="payment_authorization", error_reason="payment_failed",
+        amount=50000, raw_reference={"test": True},
+    )
+    db_conn.commit()
+
+    with pytest.raises(CohortAlreadyInUse):
+        create_test_orders(
+            db_conn, client, merchant_id, kind="failure_pattern", count=1, amount=50000,
+            experiment_id=first.experiment_id,
+        )
+
+
+def test_a_group_belonging_to_another_merchant_is_refused(committed_merchant):
+    db_conn, merchant_id = committed_merchant
+    from repository.merchants import insert_merchant
+
+    other_merchant = str(insert_merchant(db_conn, "Other Merchant", {}, {}))
+    db_conn.commit()
+    other = create_test_orders(
+        db_conn, FakeOrderClient(), other_merchant, kind="failure_pattern", count=1, amount=50000
+    )
+
+    try:
+        with pytest.raises(ValueError, match="different merchant"):
+            create_test_orders(
+                db_conn, FakeOrderClient(), merchant_id, kind="failure_pattern", count=1,
+                amount=50000, experiment_id=other.experiment_id,
+            )
+    finally:
+        with db_conn.cursor() as cur:
+            cur.execute(
+                "delete from payment_experiment_orders where experiment_id in "
+                "(select id from payment_experiments where merchant_id = %s)", (other_merchant,))
+            cur.execute("delete from payment_experiments where merchant_id = %s", (other_merchant,))
+            cur.execute("delete from orders where merchant_id = %s", (other_merchant,))
+            cur.execute("delete from merchants where id = %s", (other_merchant,))
+        db_conn.commit()
 
 
 # ---------------------------------------------------------------------------

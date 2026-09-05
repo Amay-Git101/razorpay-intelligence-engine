@@ -243,3 +243,89 @@ def test_every_path_the_frontend_calls_exists_on_the_api():
     patterns = _registered_route_patterns()
     unmatched = [path for path in sorted(concrete) if not any(p.match(path) for p in patterns)]
     assert unmatched == [], f"the frontend calls paths the API does not serve: {unmatched}"
+
+
+# ---------------------------------------------------------------------------
+# The live interaction model must stay driven by real state
+# ---------------------------------------------------------------------------
+
+
+def test_journeys_contain_no_timers():
+    """The strongest guard against a fake-live UI.
+
+    A journey that could call setTimeout could advance a stage because time
+    passed rather than because the backend said something. The only timer in
+    the frontend lives in lib/live.js (the poll interval, which reads real
+    state) and lib/testcards.js (resetting a "Copied" label, which is not
+    state at all).
+    """
+    offenders = []
+    for path in (WEB_DIR / "journeys").glob("*.js"):
+        text = path.read_text(encoding="utf-8")
+        for banned in ("setTimeout", "setInterval", "requestAnimationFrame"):
+            if banned in text:
+                offenders.append(f"{path.name}: {banned}")
+    assert offenders == [], f"a journey can advance itself on a timer: {offenders}"
+
+
+def test_pipeline_stages_are_only_set_from_a_real_snapshot():
+    """Journeys may mark the two stages they perform themselves (creating an
+    order, and reading a payment while that request is in flight). Every
+    stage after that -- decision, policy, action, verification -- is set only
+    by applyTimeline(), which reads an API response."""
+    backend_owned = ("decision", "policy", "action", "verification")
+    offenders = []
+    for path in (WEB_DIR / "journeys").glob("*.js"):
+        text = path.read_text(encoding="utf-8")
+        for stage in backend_owned:
+            if f'track.set("{stage}"' in text:
+                offenders.append(f"{path.name}: sets {stage} directly")
+    assert offenders == [], f"a journey sets a backend-owned stage itself: {offenders}"
+
+
+def test_the_frontend_never_claims_capture_without_verification():
+    """'Verified success' is rendered only under a VERIFIED_SUCCESS result."""
+    progress = (WEB_DIR / "lib" / "progress.js").read_text(encoding="utf-8")
+    index = progress.index("Verified success")
+    preceding = progress[:index]
+    assert "VERIFIED_SUCCESS" in preceding.rsplit("if", 1)[-1] + progress[index - 200 : index]
+
+
+# ---------------------------------------------------------------------------
+# Test-card helper
+# ---------------------------------------------------------------------------
+
+
+def test_the_test_card_helper_carries_the_documented_razorpay_cards():
+    """These are read from Razorpay's official Test Mode documentation. The
+    test pins them so a later edit to a remembered-but-stale number fails
+    here rather than in front of an evaluator who cannot pay."""
+    text = (WEB_DIR / "lib" / "testcards.js").read_text(encoding="utf-8")
+    for number in (
+        "4100 2800 0000 1007",
+        "5555 5100 0008 1006",
+        "5180 2872 0009 1001",
+        "6527 6589 0000 1005",
+    ):
+        assert number in text, f"missing documented test card {number}"
+    assert "success@razorpay" in text
+    assert "failure@razorpay" in text
+
+
+def test_the_test_card_helper_states_the_documented_failure_method():
+    """Razorpay produces a test failure at the OTP step, not via a special
+    card. Getting this wrong means an evaluator cannot create the failures
+    problem 03 is about."""
+    text = (WEB_DIR / "lib" / "testcards.js").read_text(encoding="utf-8")
+    assert "OTP" in text
+    assert "4 digits" in text
+
+
+def test_the_test_card_helper_never_posts_card_data_anywhere():
+    """It is a reference, not a form. No card value may reach this backend
+    or Razorpay's API from here."""
+    text = (WEB_DIR / "lib" / "testcards.js").read_text(encoding="utf-8")
+    # Code constructs, not prose: the module's own docstring is allowed to
+    # say it never touches Razorpay's iframe.
+    for banned in ("fetch(", "XMLHttpRequest", "api.razorpay.com", "<form", 'createElement("iframe"'):
+        assert banned not in text, f"the test-card helper must not use {banned}"

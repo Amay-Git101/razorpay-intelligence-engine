@@ -17,37 +17,45 @@ const PROBLEMS = [
   {
     id: 1,
     number: "01",
+    navLabel: "Decision",
     question: "An authorized payment needs a decision",
     summary: "Razorpay is holding the money but has not taken it. Capture it, or not?",
+    doing: "Create a real test payment and watch the system decide whether it should be captured.",
     detail:
-      "You will create a real Test Mode order, pay it, and watch the system read the payment, decide what it recommends, check merchant policy independently, act only if policy allows, and then verify with Razorpay what actually happened.",
+      "Razorpay can hold an authorized payment without taking the money. Something has to decide whether to take it — and whether it is allowed to.",
     render: renderCaptureJourney,
   },
   {
     id: 2,
     number: "02",
+    navLabel: "Gateway",
     question: "Is the payment gateway having trouble?",
     summary: "Failures happen. The question is whether these failures look ordinary.",
+    doing: "Use real payment activity to see whether failures are isolated or becoming unusual.",
     detail:
-      "This counts what this merchant's recent payments actually did, computes a failure rate, and keeps what was observed separate from what it might mean. It will not claim an outage it cannot see.",
+      "A failure on its own means little. The question is whether these failures look ordinary — and what this system can honestly conclude from its own data.",
     render: renderGatewayJourney,
   },
   {
     id: 3,
     number: "03",
+    navLabel: "Payment pattern",
     question: "Is this one payment failing, or are many failing?",
     summary: "Create six real payments, drive them yourself, and see what the group says.",
+    doing: "Create six real payments, complete them yourself, and see what pattern the results form.",
     detail:
-      "Six real Test Mode orders are created and fixed as a group before any of them is paid. You decide which succeed and which fail. The conclusion is computed from those six, and it changes when your results change.",
+      "Six real orders, fixed as a group before any of them is paid. You decide which succeed and which fail; the conclusion follows your results.",
     render: renderCohortJourney,
   },
   {
     id: 4,
     number: "04",
+    navLabel: "Customer history",
     question: "Does the customer's previous payment behaviour change the decision?",
     summary: "The same failure can deserve a different response depending on what came before.",
+    doing: "Use the same customer across payments and see what the system learns from actual history.",
     detail:
-      "Pay as the same customer more than once and the system reads that real history when it decides. History can send a payment to a human for review; it can never buy a payment more automation.",
+      "The same failure can deserve a different response depending on what that customer did before. Here the history is real, so you build it yourself.",
     render: renderHistoryJourney,
   },
 ];
@@ -113,8 +121,8 @@ function renderLanding() {
     card.href = `#/problem/${problem.id}`;
     card.appendChild(el("span", "problem-number", problem.number));
     card.appendChild(el("h2", "problem-question", problem.question));
-    card.appendChild(el("p", "problem-summary", problem.summary));
-    card.appendChild(el("span", "problem-go", "Run this experiment →"));
+    card.appendChild(el("p", "problem-summary", problem.doing));
+    card.appendChild(el("span", "problem-go", "Start →"));
     grid.appendChild(card);
   });
   wrap.appendChild(grid);
@@ -125,9 +133,20 @@ function renderLanding() {
 function renderProblem(problem) {
   const wrap = el("div", "problem-view");
 
-  const back = el("a", "back-link", "← All problems");
-  back.href = "#/";
-  wrap.appendChild(back);
+  const nav = el("nav", "problem-nav");
+  nav.setAttribute("aria-label", "Problems");
+  const home = el("a", "problem-nav-home", "All problems");
+  home.href = "#/";
+  nav.appendChild(home);
+  PROBLEMS.forEach((entry) => {
+    const link = el("a", `problem-nav-item${entry.id === problem.id ? " is-active" : ""}`);
+    link.href = `#/problem/${entry.id}`;
+    link.appendChild(el("span", "problem-nav-number", entry.number));
+    link.appendChild(el("span", "problem-nav-label", entry.navLabel));
+    if (entry.id === problem.id) link.setAttribute("aria-current", "page");
+    nav.appendChild(link);
+  });
+  wrap.appendChild(nav);
 
   const head = el("header", "problem-head");
   head.appendChild(el("span", "problem-number-lg", problem.number));
